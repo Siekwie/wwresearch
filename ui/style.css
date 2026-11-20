@@ -1265,7 +1265,7 @@ details.proof .prose {
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 9px;
-  padding: 11px 12px;
+  padding: 11px 70px 11px 12px;
   font: 12px/1.5 var(--mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
