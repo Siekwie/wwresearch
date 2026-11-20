@@ -1,0 +1,46 @@
+{
+  "name": "wwresearch",
+  "version": "0.1.0",
+  "description": "WorldWideResearch — a shared research board that makes parallel AI agents explore different ideas instead of the same one.",
+  "type": "module",
+  "bin": {
+    "wwresearch": "bin/wwresearch.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "ui",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node bin/wwresearch.js serve",
+    "demo": "node bin/wwresearch.js demo",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "ai-agents",
+    "multi-agent",
+    "research",
+    "mcp",
+    "model-context-protocol",
+    "claude-code",
+    "orchestrator",
+    "swarm",
+    "knowledge-graph",
+    "automated-research"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Siekwie/wwresearch.git"
+  },
+  "homepage": "https://github.com/Siekwie/wwresearch#readme",
+  "bugs": {
+    "url": "https://github.com/Siekwie/wwresearch/issues"
+  },
+  "author": "Siekwie",
+  "license": "MIT"
+}

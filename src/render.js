@@ -1,0 +1,227 @@
+// Plain-text renderings of board data for agents. Kept compact on purpose:
+// every character here is paid for in tokens by every agent that reads it.
+
+import { short } from './board.js';
+
+export const BOARD_EXPLANATION = `HOW THE BOARD WORKS (shown once)
+- Many agents work on the same goal in parallel. The board guarantees that no two of them work on the same idea.
+- You are in a queue. Only the agent at position 1 gets to see the board, so nobody pays to read a board that is about to change.
+- On your turn you receive every card: ideas already taken, partial results, dead ends. If your idea is already there — in substance, not just in wording — choose a different approach that is NOT on the board, then claim a card.
+- Your card is your workspace: note() progress now and then, add_finding() for every insight someone else could reuse. Negative results count.
+- Finish with exactly one of: submit_proof, submit_derivation, report_dead_end. Then stop. One agent, one card.
+- You never verify your own result. A fresh agent with no stake in it does that.`;
+
+export function statusLabel(c) {
+  switch (c.status) {
+    case 'active':
+      return 'in progress';
+    case 'open':
+      return 'waiting for an agent';
+    case 'proof':
+      return { in_review: 'proof · in review', verified: 'proof · VERIFIED', refuted: 'proof · REFUTED', inconclusive: 'proof · review inconclusive', unreviewed: 'proof · unreviewed' }[c.proofStatus] ?? 'proof';
+    case 'derivation':
+      return c.followupId ? `partial result → continued in ${c.followupId}` : 'partial result';
+    case 'dead_end':
+      return 'dead end';
+    case 'abandoned':
+      return 'abandoned · free to retry';
+    case 'reviewed':
+      return 'review done';
+    default:
+      return c.status;
+  }
+}
+
+function cardLines(c) {
+  const head = `${c.id} [${statusLabel(c)}] ${c.title} — ${c.approach}`;
+  return c.takeaway ? `${head}\n    ↳ ${c.takeaway}` : head;
+}
+
+function boardBlock(board, maxCards = 150) {
+  const n = board.counts;
+  const parts = [
+    `${n.cards} cards`,
+    `${n.active} in progress`,
+    `${n.proofs} proofs (${n.verified} verified, ${n.refuted} refuted)`,
+    `${n.derivations} partial results`,
+    `${n.deadEnds} dead ends`,
+    `${n.findings} findings`,
+  ];
+  const lines = [`BOARD · ${parts.join(' · ')}`];
+  if (!board.cards.length) lines.push('(empty — you are the first)');
+  for (const c of board.cards.slice(0, maxCards)) lines.push(cardLines(c));
+  if (board.cards.length > maxCards)
+    lines.push(`… ${board.cards.length - maxCards} older cards not shown. Use search_knowledge("<your idea>") to check them.`);
+  if (board.findings.length) {
+    lines.push('', 'LATEST FINDINGS (search_knowledge for more)');
+    for (const f of board.findings) lines.push(`${f.id} [${f.kind} · ${f.confidence} · ${f.cardId}] ${f.statement}`);
+  }
+  return lines.join('\n');
+}
+
+export function renderTurn(res) {
+  const out = [
+    `YOUR TURN — you hold the board for the next ${res.secondsLeft}s. Nobody else can claim a card until you do.`,
+    '',
+    `Your queued idea: "${short(res.idea, 300)}"`,
+    '',
+  ];
+  if (res.similar.length) {
+    out.push('Possibly the same as your idea — check these first:');
+    for (const s of res.similar) out.push(`  ! ${s.id} [${s.status}] ${s.title} (word overlap ${s.score})`);
+  } else if (res.board.cards.length) {
+    out.push('No card shares much wording with your idea. Still read the list: the same idea can be phrased very differently.');
+  }
+  out.push('', boardBlock(res.board), '');
+  out.push(
+    'NOW DO EXACTLY ONE OF',
+    '- Your idea is not on the board → claim_card(title, approach).',
+    '- Your idea is already there → think of a different approach that is NOT on the board (dead ends and findings above are raw material), then claim_card(title, approach, pivoted_from: "<id of the card that already has your idea>").',
+    '- You have nothing new to add → pass_turn.',
+  );
+  return out.join('\n');
+}
+
+export function renderWaiting(res) {
+  return `Waiting — queue position ${res.position}. Call wait_turn again.`;
+}
+
+export function renderGate(res) {
+  const lines = ['NOT CLAIMED — this looks like a card that already exists:'];
+  for (const s of res.similar) lines.push(`  ${s.id} [${s.status}] ${s.title} (word overlap ${s.score})`);
+  lines.push(
+    '',
+    'If it is the same idea: pick a different approach and call claim_card again.',
+    'If it only sounds similar: call claim_card again with different_because: "<one sentence on what is substantively different>".',
+  );
+  return lines.join('\n');
+}
+
+const WORK_RULES = `WHILE YOU WORK
+- note(text): short progress notes, a few per card — they are the card's lab notebook and keep your lease alive.
+- add_finding(statement, kind, confidence): every reusable insight, including negative ones. Reference earlier findings with builds_on / contradicts.
+- search_knowledge(query) / read_card(id): look up what others established. Build on it instead of redoing it.
+
+HOW YOU FINISH (exactly one, then stop)
+- submit_proof: you believe the goal is solved. Give the precise claim and the complete argument. Do not polish or self-certify it — an independent agent reviews it.
+- submit_derivation: you solved a part, or the approach survived every attempt to refute it but is not finished. State what is established and the concrete next step; a fresh agent continues from there.
+- report_dead_end: the approach does not work. Say exactly why — that reason saves every later agent the same trip.
+Be honest about which one it is. A clear dead end is worth more than an inflated proof.`;
+
+export function renderClaimed(res) {
+  return [
+    `CLAIMED — ${res.card.id} "${res.card.title}" is yours. The queue has moved on; your research now runs in parallel with everyone else's.`,
+    '',
+    WORK_RULES,
+  ].join('\n');
+}
+
+function notesBlock(notes, title) {
+  if (!notes?.length) return [];
+  return ['', title, ...notes.map((n) => `- ${n.system ? '[system] ' : ''}${n.text}`)];
+}
+
+export function renderBriefing({ agent, card, briefing: b }, { showToken = false } = {}) {
+  const out = [];
+  if (showToken) out.push(`You are agent "${agent.name}". Your token: ${agent.token}`, 'Pass this token to every other tool call.', '');
+  if (card.kind === 'review') {
+    out.push(
+      `You are the independent reviewer on ${card.id}. It reviews the proof submitted on ${b.parentId} ("${b.authorCardTitle}").`,
+      'You did not write this proof and have no stake in it. Your job is to try to break it.',
+      '',
+      'GOAL',
+      b.goal,
+      '',
+      'CLAIM',
+      b.claim,
+      '',
+      'SUBMITTED PROOF',
+      b.proof,
+    );
+    if (b.assumptions) out.push('', 'STATED ASSUMPTIONS', b.assumptions);
+    if (b.artifacts?.length) out.push('', 'ARTIFACTS (files the author points to)', ...b.artifacts.map((a) => `- ${a}`));
+    out.push(...notesBlock(b.previousNotes, 'NOTES LEFT ON THIS REVIEW CARD BY A PREVIOUS REVIEWER'));
+    out.push(
+      '',
+      'HOW TO REVIEW',
+      "1. Attack it. Check every step, hidden assumptions, circularity, edge cases, and whether the claim really settles the GOAL as stated. Re-derive and re-run instead of trusting. You deliberately cannot see the author's working notes — only what was submitted.",
+      '2. Design a test the user can run themselves that does NOT reuse the author\'s reasoning, code or data (a different method, an independent tool, a formal checker, a brute-force check, a known reference).',
+      '3. Call submit_review with a verdict (verified / refuted / inconclusive) and the four report sections:',
+      '   what_was_found · assessment (why you believe it, or exactly where it breaks) · independent_test · why_independent',
+      'Only say "verified" if you could not break it and would defend it yourself. If unsure: "inconclusive". The report is written for the human user — plain, specific, no jargon without explanation.',
+      'You may use note() and add_finding() while you work. Then stop: one agent, one card.',
+    );
+    return out.join('\n');
+  }
+  out.push(
+    `You are now working on ${card.id}: "${card.title}". You skipped the queue because this card continues an existing result (${b.parentId}).`,
+    '',
+    'GOAL',
+    b.goal,
+    '',
+    `INHERITED FROM ${b.parentId} "${b.parentTitle}"`,
+    `Approach: ${b.parentApproach}`,
+    `Established: ${b.established}`,
+    '',
+    'YOUR TASK (the next step)',
+    b.nextStep,
+  );
+  if (b.openQuestions) out.push('', 'OPEN QUESTIONS', b.openQuestions);
+  if (b.parentFindings?.length) {
+    out.push('', `FINDINGS FROM ${b.parentId}`);
+    for (const f of b.parentFindings) out.push(`${f.id} [${f.kind} · ${f.confidence}] ${f.statement}`);
+  }
+  if (b.lineage?.length > 1) out.push('', `Lineage: ${b.lineage.map((l) => l.id).join(' → ')} → ${card.id}`);
+  out.push(...notesBlock(b.previousNotes, 'NOTES LEFT ON THIS CARD BY A PREVIOUS AGENT'));
+  out.push(
+    '',
+    `You are not the author of what you inherit: sanity-check it before you build on it. read_card("${b.parentId}") shows the full notes.`,
+    '',
+    WORK_RULES,
+  );
+  return out.join('\n');
+}
+
+export function renderCard(d) {
+  const out = [`${d.id} [${statusLabel({ ...d, followupId: d.outcome?.followupId })}] ${d.title}`, `Kind: ${d.kind}${d.agentName ? ` · agent: ${d.agentName}` : ''}`];
+  if (d.lineage.length > 1) out.push(`Lineage: ${d.lineage.map((l) => l.id).join(' → ')}`);
+  out.push('', 'APPROACH', d.approach);
+  const o = d.outcome;
+  if (o?.type === 'proof') {
+    out.push('', 'CLAIM', o.claim, '', 'PROOF', o.proof);
+    if (o.assumptions) out.push('', 'ASSUMPTIONS', o.assumptions);
+    if (o.artifacts?.length) out.push('', 'ARTIFACTS', ...o.artifacts.map((a) => `- ${a}`));
+  } else if (o?.type === 'derivation') {
+    out.push('', 'ESTABLISHED', o.established, '', 'NEXT STEP', o.nextStep);
+    if (o.openQuestions) out.push('', 'OPEN QUESTIONS', o.openQuestions);
+  } else if (o?.type === 'dead_end') {
+    out.push('', 'WHY IT FAILS', o.whyItFails);
+    if (o.salvageable) out.push('', 'SALVAGEABLE', o.salvageable);
+  } else if (o?.type === 'review') {
+    out.push('', `VERDICT: ${o.verdict}`, '', 'WHAT WAS FOUND', o.whatWasFound, '', 'ASSESSMENT', o.assessment, '', 'INDEPENDENT TEST', o.independentTest, '', 'WHY IT IS INDEPENDENT', o.whyIndependent);
+    if (o.flaws) out.push('', 'FLAWS', o.flaws);
+  }
+  for (const r of d.reviews) {
+    if (r.outcome) out.push('', `REVIEW ${r.id}: ${r.outcome.verdict.toUpperCase()}`, r.outcome.assessment, ...(r.outcome.flaws ? [`Flaws: ${r.outcome.flaws}`] : []));
+    else out.push('', `REVIEW ${r.id}: ${r.status}`);
+  }
+  if (d.findings.length) {
+    out.push('', 'FINDINGS');
+    for (const f of d.findings) out.push(`${f.id} [${f.kind} · ${f.confidence}] ${f.statement}${f.detail ? `\n    ${short(f.detail, 400)}` : ''}`);
+  }
+  if (d.notesHidden) out.push('', "NOTES: hidden — you are reviewing this card and must judge the submitted proof on its own.");
+  else if (d.notes.length) out.push(...notesBlock(d.notes.slice(-40), `NOTES (${d.notes.length})`));
+  if (d.children.length) out.push('', 'CHILD CARDS', ...d.children.map((c) => `${c.id} [${statusLabel(c)}] ${c.title}`));
+  return out.join('\n');
+}
+
+export function renderSearch(results, query) {
+  if (!results.length) return `Nothing on the board matches "${query}".`;
+  return results
+    .map((r) =>
+      r.type === 'finding'
+        ? `${r.id} [finding · ${r.kind} · ${r.confidence} · from ${r.cardId}] ${r.statement}${r.detail ? `\n    ${short(r.detail, 300)}` : ''}`
+        : cardLines(r),
+    )
+    .join('\n');
+}

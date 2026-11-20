@@ -1,0 +1,157 @@
+// The orchestrator. Plain code, no model, and deliberately only two jobs:
+//
+//   1. keep the number of live agents at the value the user set
+//   2. react to events: when a proof or follow-up card opens, spawn an agent
+//      directly into that card — no queue
+//
+// It never reads research, never judges ideas, never talks to agents.
+
+import { EventEmitter } from 'node:events';
+import { researcherPrompt, cardPrompt, pickLens } from './prompts.js';
+
+export class Orchestrator extends EventEmitter {
+  /**
+   * @param {object} opts
+   * @param {import('./board.js').Board} opts.board
+   * @param {(ctx: object) => {exited: Promise<{code?: number, error?: string, costUsd?: number}>, kill: () => void}} opts.spawnAgent
+   * @param {number} opts.target           number of agents to keep alive
+   * @param {number} [opts.maxIdeas]       stop sending new researchers after this many (0 = unlimited)
+   * @param {boolean} [opts.lenses]        give each researcher a different thinking nudge
+   * @param {number} [opts.agentTimeoutMs] kill agents that run longer than this (0 = never)
+   * @param {(agent: object) => string|null} [opts.workspaceFor]
+   */
+  constructor({ board, spawnAgent, target, maxIdeas = 0, lenses = true, agentTimeoutMs = 0, workspaceFor = () => null, retryDelayMs = 2000 }) {
+    super();
+    this.board = board;
+    this.spawnAgent = spawnAgent;
+    this.lenses = lenses;
+    this.agentTimeoutMs = agentTimeoutMs;
+    this.workspaceFor = workspaceFor;
+    this.retryDelayMs = retryDelayMs;
+    this.live = new Map();
+    this.stopped = false;
+    this.pending = null;
+    this.launchFailures = 0;
+    this.lensOffset = Math.floor(Math.random() * 1000);
+    board.setOrchestrator({ enabled: true, target, maxIdeas, paused: false, error: null, idle: false, live: 0 });
+
+    this.onEvent = (ev) => {
+      // Job 2 — the "prefabricated message": a card just opened and wants an agent.
+      if (ev.type === 'card_opened') this.schedule();
+      // The board released an agent (lease expired): make sure its process is gone too.
+      if (ev.type === 'agent_gone') this.live.get(ev.agentId)?.handle.kill();
+    };
+    this.onSettings = () => this.schedule();
+  }
+
+  start() {
+    this.board.on('event', this.onEvent);
+    this.board.on('orchestrator', this.onSettings);
+    this.schedule();
+    return this;
+  }
+
+  schedule(delay = 0) {
+    if (this.pending || this.stopped) return;
+    this.pending = setTimeout(() => {
+      this.pending = null;
+      this.reconcile();
+    }, delay);
+  }
+
+  reconcile() {
+    if (this.stopped) return;
+    const o = this.board.state.orchestrator;
+    if (o.paused) return;
+
+    // Job 2: every open card gets an agent, directly.
+    for (const card of this.board.openCards()) {
+      if (!card.reservedFor) this.#spawn(card.kind === 'review' ? 'reviewer' : 'followup', card);
+    }
+    // Job 1: keep the pool full with researchers that go through the queue.
+    while (this.live.size < o.target && (o.maxIdeas === 0 || o.ideasSpawned < o.maxIdeas)) this.#spawn('researcher', null);
+
+    const idle = this.live.size === 0 && (o.target === 0 || (o.maxIdeas !== 0 && o.ideasSpawned >= o.maxIdeas));
+    if (idle !== o.idle) {
+      this.board.setOrchestrator({ idle });
+      if (idle) this.emit('idle');
+    }
+  }
+
+  #spawn(role, card) {
+    const { board } = this;
+    const o = board.state.orchestrator;
+    const agent = board.registerAgent({ role, origin: 'orchestrator', cardId: card?.id ?? null });
+    const goal = board.state.project.goal;
+    const workspace = this.workspaceFor(agent);
+    const prompt =
+      role === 'researcher'
+        ? researcherPrompt({ goal, token: agent.token, lens: this.lenses ? pickLens(this.lensOffset + o.ideasSpawned) : null, workspace })
+        : cardPrompt({ goal, token: agent.token, kind: card.kind, workspace });
+
+    let handle;
+    try {
+      handle = this.spawnAgent({ agent, role, card, prompt, workspace });
+    } catch (err) {
+      handle = { exited: Promise.resolve({ code: -1, error: err.message }), kill() {} };
+    }
+    const rec = { agent, handle, timer: null };
+    if (this.agentTimeoutMs > 0) {
+      rec.timer = setTimeout(() => {
+        board.agentGone(agent.id, `timed out after ${Math.round(this.agentTimeoutMs / 60000)} min`);
+        handle.kill();
+      }, this.agentTimeoutMs);
+      rec.timer.unref?.();
+    }
+    this.live.set(agent.id, rec);
+    board.setOrchestrator({ live: this.live.size, spawned: o.spawned + 1, ideasSpawned: o.ideasSpawned + (role === 'researcher' ? 1 : 0), idle: false });
+    this.emit('spawned', { agent, role, card });
+    handle.exited.then(
+      (res) => this.#exited(rec, res ?? {}),
+      (err) => this.#exited(rec, { code: -1, error: err?.message ?? String(err) }),
+    );
+  }
+
+  #exited(rec, res) {
+    const { board } = this;
+    const { agent } = rec;
+    clearTimeout(rec.timer);
+    this.live.delete(agent.id);
+    const o = board.state.orchestrator;
+    const patch = { live: this.live.size };
+    if (res.costUsd > 0) patch.costUsd = Math.round((o.costUsd + res.costUsd) * 10000) / 10000;
+
+    // An agent that never made a single board call did not really start
+    // (command missing, not logged in, MCP not reachable). Don't burn through
+    // the budget retrying blindly: back off, and stop after three in a row.
+    const neverShowedUp = agent.calls === 0;
+    let delay = 0;
+    if (neverShowedUp && !this.stopped) {
+      this.launchFailures++;
+      if (agent.role === 'researcher') patch.ideasSpawned = Math.max(0, o.ideasSpawned - 1);
+      delay = this.retryDelayMs * this.launchFailures;
+      if (this.launchFailures >= 3) {
+        patch.paused = true;
+        patch.error = `Agents exit without ever contacting the board${res.error ? ` — ${res.error}` : res.code != null ? ` (exit code ${res.code})` : ''}. Check the agent command, then resume.`;
+        this.launchFailures = 0;
+      }
+    } else if (!neverShowedUp) this.launchFailures = 0;
+
+    board.setOrchestrator(patch);
+    board.agentGone(agent.id, res.error ? `failed: ${res.error}` : 'process exited');
+    this.emit('exited', { agent, ...res });
+    this.schedule(delay);
+  }
+
+  /** Stop spawning and terminate every live agent. */
+  stop() {
+    this.stopped = true;
+    clearTimeout(this.pending);
+    this.board.off('event', this.onEvent);
+    this.board.off('orchestrator', this.onSettings);
+    for (const rec of this.live.values()) {
+      clearTimeout(rec.timer);
+      rec.handle.kill();
+    }
+  }
+}

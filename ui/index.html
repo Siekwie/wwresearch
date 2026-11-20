@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>wwresearch</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23e8590c'/%3E%3Cpath d='M6 10l4 12 4-9 2 5 2-5 4 9 4-12' fill='none' stroke='%23fff' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="top">
+      <a class="brand" href="#board" aria-label="wwresearch">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" /><path d="M6 10l4 12 4-9 2 5 2-5 4 9 4-12" /></svg>
+        <span><b>ww</b>research</span>
+      </a>
+      <button class="goal" id="goal" title="Show the full goal"></button>
+      <div class="stats" id="stats"></div>
+      <div class="controls" id="controls"></div>
+    </header>
+    <div id="banners"></div>
+    <nav class="tabs" id="tabs" aria-label="Views">
+      <a href="#board" data-view="board">Board</a>
+      <a href="#graph" data-view="graph">Knowledge graph</a>
+      <a href="#reports" data-view="reports">Reports <span class="count" id="report-count"></span></a>
+      <span class="spacer"></span>
+      <span class="conn" id="conn" title="Connection to the board"><i></i><span>connecting</span></span>
+    </nav>
+
+    <main>
+      <section class="view view-board" id="view-board">
+        <div class="board" id="columns"></div>
+        <aside class="feed">
+          <h2>Activity</h2>
+          <ol id="feed"></ol>
+        </aside>
+      </section>
+
+      <section class="view view-graph" id="view-graph" hidden>
+        <div class="graph" id="canvas">
+          <div class="graph-legend" id="graph-legend"></div>
+          <div class="graph-tip" id="graph-tip" hidden></div>
+          <div class="graph-hint">drag to move · scroll to zoom · click a node for details</div>
+        </div>
+        <aside class="knowledge">
+          <div class="knowledge-head">
+            <h2>Findings <span class="count" id="finding-count"></span></h2>
+            <input id="finding-filter" type="search" placeholder="Filter findings…" aria-label="Filter findings" />
+          </div>
+          <ol id="findings"></ol>
+        </aside>
+      </section>
+
+      <section class="view view-reports" id="view-reports" hidden></section>
+    </main>
+
+    <div class="scrim" id="scrim" hidden></div>
+    <aside class="drawer" id="drawer" aria-label="Details" hidden></aside>
+    <dialog class="dock" id="dock"></dialog>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
