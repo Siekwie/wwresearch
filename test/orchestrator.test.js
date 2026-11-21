@@ -109,6 +109,42 @@ test('job 2: proof and follow-up cards get an agent directly, without the queue'
   orch.stop();
 });
 
+test('an agent that closed its card but keeps running is stopped after a grace period', async () => {
+  const board = new Board({ goal: 'Find a proof of the statement.' });
+  const { spawned, spawnAgent } = manualRunner();
+  const orch = new Orchestrator({ board, spawnAgent, target: 1, maxIdeas: 1, finishGraceMs: 20 }).start();
+  await until(() => spawned.length === 1);
+  const a = spawned[0].agent;
+  board.joinQueue({ token: a.token, idea: 'A first idea for the statement.' });
+  board.peekTurn(a.token);
+  board.claimCard({ token: a.token, title: 'First idea', approach: 'Try the first idea carefully and in detail.' });
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(spawned[0].killed, false, 'a working agent is left alone');
+  board.reportDeadEnd({ token: a.token, why_it_fails: 'It does not generalise beyond the base case.' });
+  await until(() => spawned[0].killed);
+  await until(() => board.state.orchestrator.live === 0);
+  assert.equal(board.state.cards['C-1'].status, 'dead_end', 'its result stands');
+  orch.stop();
+});
+
+test('stopping the orchestrator leaves cards in place for the next start', async () => {
+  const board = new Board({ goal: 'Find a proof of the statement.' });
+  const { spawned, spawnAgent } = manualRunner();
+  const orch = new Orchestrator({ board, spawnAgent, target: 1 }).start();
+  await until(() => spawned.length === 1);
+  const a = spawned[0].agent;
+  board.joinQueue({ token: a.token, idea: 'A first idea for the statement.' });
+  board.peekTurn(a.token);
+  board.claimCard({ token: a.token, title: 'First idea', approach: 'Try the first idea carefully and in detail.' });
+  orch.stop();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(spawned[0].killed, true);
+  assert.equal(board.state.cards['C-1'].reopens, 0);
+  board.recover();
+  assert.equal(board.state.cards['C-1'].status, 'open');
+  assert.equal(board.state.cards['C-1'].reopens, 0);
+});
+
 test('agents that never reach the board pause the orchestrator instead of burning the budget', async () => {
   const board = new Board({ goal: 'Find a proof of the statement.' });
   let spawns = 0;

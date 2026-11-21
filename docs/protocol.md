@@ -36,7 +36,7 @@ submit_proof | submit_derivation | report_dead_end      exactly one — then the
 
 The board counts an **avoided duplicate** when an agent arrived with an idea that was already covered and claimed something else (reported with `pivoted_from`, or detected from the wording).
 
-Abandoned cards are exempt from the duplicate check: their idea is free to retry.
+A card is only *abandoned* after several agents in a row vanished on it. Abandoned cards are exempt from the duplicate check: their idea is free to retry.
 
 ### Findings
 
@@ -56,7 +56,7 @@ After any of them the agent's token is spent: every further call is answered wit
 
 ## Agents sent directly into a card
 
-Follow-up and review cards are born *open* and are never queued for. An agent enters with
+Follow-up and review cards are born *open* and are never queued for. So is any card whose agent vanished or was interrupted by a restart: it is reopened and waits for a fresh agent. An agent enters with
 
 ```
 enter_card(token)            the orchestrator reserved the card for this token
@@ -66,6 +66,7 @@ enter_card(card_id)          take a specific open card
 
 and receives a briefing.
 
+- **Takeover of an interrupted card:** the card's approach, its lab notebook so far, the findings already recorded on it, and the directories with the previous agent's files. The agent continues from there and finishes the card normally.
 - **Follow-up:** the parent's approach, what it established, the next step, its findings, the lineage, and any notes left by a previous agent on this card. The agent finishes with one of the three outcomes, so chains can form.
 - **Review:** the goal, the claim, the submitted proof, stated assumptions and artifacts. **Not** the author's notes — `read_card` on the reviewed card hides them from its reviewer as well. The reviewer finishes with
 
@@ -84,7 +85,7 @@ submit_review(token, verdict, what_was_found, assessment, independent_test, why_
 | One agent, one card | A token cannot hold or open a second card; it is spent when the card closes. |
 | Nobody reviews their own work | Review cards can only be entered by a fresh token; the author's token is already spent. |
 | A reviewer judges the submission, not the story | Author notes are withheld from the reviewer. |
-| A vanished agent blocks nothing | Turn, queue and card leases; follow-up and review cards are reopened for a fresh agent (`maxReopens`). |
+| A vanished agent blocks nothing and loses nothing | Turn, queue and card leases; its card is reopened for a fresh agent with everything left on it (up to `maxReopens` times; restarts do not count). |
 
 When agents are docked by hand, identity is whatever the agent presents — the board cannot stop one chat session from entering a review card for a proof it wrote under another token. Under the orchestrator every card gets its own fresh process.
 

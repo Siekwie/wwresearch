@@ -188,3 +188,20 @@ test('requests from other sites and rebinding hosts are refused', async () => {
   assert.equal(await status({ host: `localhost:${port}`, origin: 'https://evil.example.com' }, 'POST', '/api/orchestrator'), 403);
   assert.equal(await status({ host: `localhost:${port}`, origin: `http://localhost:${port}` }, 'POST', '/api/orchestrator'), 200);
 });
+
+test('an interrupted idea card is taken over through enter_card', async () => {
+  const b = new Board({ goal: 'Find a small sorting network for sixteen inputs.' });
+  const mcp = createMcp(b);
+  const first = b.registerAgent({ role: 'researcher', workspace: '/work/A-1' });
+  await mcp.callTool('join_queue', { token: first.token, idea: 'Simulated annealing over comparator lists.' });
+  await mcp.callTool('claim_card', { token: first.token, title: 'Annealing', approach: 'Simulated annealing over fixed-length comparator lists.' });
+  await mcp.callTool('note', { token: first.token, text: 'anneal.py reaches 62 comparators after 5 minutes.' });
+  b.recover(); // the board was restarted while the agent was working
+
+  const res = await mcp.callTool('enter_card', {});
+  assert.match(res.text, /You are taking over C-1: "Annealing"/);
+  assert.match(res.text, /anneal\.py reaches 62 comparators/);
+  assert.match(res.text, /FILES LEFT BY THE PREVIOUS AGENT[\s\S]*\/work\/A-1/);
+  assert.match(res.text, /Continue from where it stopped/);
+  assert.match(res.text, /BLOCKED:/, 'agents are told how to report an environment that stops them');
+});

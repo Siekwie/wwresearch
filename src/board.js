@@ -16,7 +16,7 @@ export const DEFAULT_CONFIG = {
   pollSeconds: 50, // long-poll duration of wait_turn
   cardLeaseMinutes: 60, // active cards without any activity are released
   maxDepth: 6, // longest chain of follow-up cards
-  maxReopens: 2, // how often a follow-up/review card is handed to a fresh agent
+  maxReopens: 2, // how often a card whose agent vanished is handed to a fresh agent
   similarFlag: 0.28, // "looks related" threshold (hint only)
   similarGate: 0.5, // "looks like a duplicate" threshold (asks for a justification)
 };
@@ -198,7 +198,7 @@ export class Board extends EventEmitter {
    * it can hand the token to the new agent; manual agents get registered
    * implicitly by join_queue / enter_card.
    */
-  registerAgent({ role = 'researcher', origin = 'manual', name, cardId = null } = {}) {
+  registerAgent({ role = 'researcher', origin = 'manual', name, cardId = null, workspace = null } = {}) {
     const id = `A-${++this.state.seq.agent}`;
     const agent = {
       id,
@@ -209,6 +209,7 @@ export class Board extends EventEmitter {
       state: 'new', // new → queued → turn → working → finished | gone
       cardId: null,
       idea: null,
+      workspace, // directory with this agent's files, handed over if someone continues its card
       calls: 0, // authenticated board calls — 0 means the agent never showed up
       createdAt: this.now(),
       lastSeenAt: this.now(),
@@ -228,8 +229,13 @@ export class Board extends EventEmitter {
     return agent;
   }
 
-  /** An agent disappeared (process exit, lease expiry, restart). Releases whatever it held. */
-  agentGone(agentId, reason = 'left') {
+  /**
+   * An agent disappeared (process exit, lease expiry, restart). Its card is not
+   * lost: it is reopened so a fresh agent can take over with the notes, findings
+   * and files that are already there. `restart` marks an interruption that was
+   * not the card's fault and does not count against maxReopens.
+   */
+  agentGone(agentId, reason = 'left', { restart = false } = {}) {
     const agent = this.state.agents[agentId];
     if (!agent || agent.state === 'finished' || agent.state === 'gone') return;
     const qi = this.state.queue.findIndex((e) => e.agentId === agentId);
@@ -241,19 +247,18 @@ export class Board extends EventEmitter {
     this.#event('agent_gone', { agentId, text: `${agent.name} left (${reason})` });
     if (card) {
       if (card.reservedFor === agentId) card.reservedFor = null;
-      if (card.agentId === agentId && card.status === 'active') this.#abandon(card, agent, reason);
+      if (card.agentId === agentId && card.status === 'active') this.#release(card, agent, reason, restart);
     }
     if (qi !== -1) this.emit('queue');
   }
 
-  #abandon(card, agent, reason) {
+  #release(card, agent, reason, restart) {
     card.notes.push({ at: this.now(), system: true, text: `${agent.name} left without closing this card (${reason}).` });
-    const retry = (card.kind === 'review' || card.kind === 'followup') && card.reopens < this.config.maxReopens;
-    if (retry) {
+    if (restart || card.reopens < this.config.maxReopens) {
       card.status = 'open';
       card.agentId = null;
-      card.reopens++;
-      this.#event('card_opened', { cardId: card.id, kind: card.kind, reopened: true, text: `${card.id} reopened for a fresh agent` });
+      if (!restart) card.reopens++;
+      this.#event('card_opened', { cardId: card.id, kind: card.kind, reopened: true, text: `${card.id} reopened — a fresh agent takes over: ${card.title}` });
     } else {
       card.status = 'abandoned';
       card.closedAt = this.now();
@@ -384,6 +389,7 @@ export class Board extends EventEmitter {
     }
 
     const card = this.#createCard({ kind: 'idea', title, approach, status: 'active', agent });
+    if (agent.workspace) card.workspaces.push(agent.workspace);
     Object.assign(card, { originalIdea: entry.idea, differentBecause, flaggedSimilar: Boolean(top && top.score >= this.config.similarGate), pivotedFrom: pivoted ? pivotedFrom : null, buildsOn });
     this.state.queue.shift();
     agent.state = 'working';
@@ -435,6 +441,7 @@ export class Board extends EventEmitter {
       lastActivityAt: now,
       notes: [],
       findingIds: [],
+      workspaces: [], // directories of every agent that worked on this card
       outcome: null,
     };
     this.state.cards[id] = card;
@@ -471,6 +478,8 @@ export class Board extends EventEmitter {
     }
     const now = this.now();
     Object.assign(card, { status: 'active', agentId: agent.id, reservedFor: null, claimedAt: now, lastActivityAt: now });
+    card.workspaces ??= [];
+    if (agent.workspace && !card.workspaces.includes(agent.workspace)) card.workspaces.push(agent.workspace);
     agent.state = 'working';
     agent.cardId = card.id;
     this.#event('card_entered', { agentId: agent.id, cardId: card.id, text: `${agent.name} entered ${card.id}: ${card.title}` });
@@ -479,7 +488,17 @@ export class Board extends EventEmitter {
 
   #briefing(card) {
     const parent = this.state.cards[card.parentId];
-    const base = { kind: card.kind, goal: this.state.project.goal, parentId: parent?.id ?? null, previousNotes: card.notes.slice(-20) };
+    // What an earlier agent on this very card left behind (the card was reopened).
+    const base = {
+      kind: card.kind,
+      goal: this.state.project.goal,
+      parentId: parent?.id ?? null,
+      title: card.title,
+      approach: card.approach,
+      previousNotes: card.notes.slice(-30),
+      previousFindings: card.findingIds.map((id) => this.state.findings[id]),
+      previousWorkspaces: (card.workspaces ?? []).filter((w) => w !== this.state.agents[card.agentId]?.workspace),
+    };
     if (!parent) return base;
     if (card.kind === 'review') {
       // The reviewer sees the submitted proof — never the author's scratch notes.
@@ -790,7 +809,7 @@ export class Board extends EventEmitter {
   recover() {
     for (const card of Object.values(this.state.cards)) card.reservedFor = null;
     for (const agent of Object.values(this.state.agents)) {
-      if (agent.state !== 'finished' && agent.state !== 'gone') this.agentGone(agent.id, 'board restarted');
+      if (agent.state !== 'finished' && agent.state !== 'gone') this.agentGone(agent.id, 'board restarted', { restart: true });
     }
     this.state.queue = [];
     Object.assign(this.state.orchestrator, { live: 0, error: null, idle: false });

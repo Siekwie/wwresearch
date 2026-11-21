@@ -19,7 +19,7 @@ wwresearch is one Node.js process with no dependencies.
 | `prompts.js` | The prompts that dock an agent, and the "lenses". |
 | `server.js` | HTTP: `/mcp`, `/api/tool/*`, the UI's JSON API, server-sent events, static files. |
 | `orchestrator.js` | Keeps N agents alive; spawns an agent into every card that opens. |
-| `runners.js` | Starts an agent process (Claude Code, or a custom command). |
+| `runners.js` | Starts an agent process (Claude Code, or a custom command), with its permissions, and stops its whole process tree. |
 | `similarity.js` | TF-IDF word overlap for duplicate hints and search. |
 | `report.js` | Markdown exports. |
 | `demo.js` | Scripted agents for `wwresearch demo`. |
@@ -56,7 +56,13 @@ Before agents ever reach the board, most of them would propose the same idea. Re
 
 ### Persistence
 
-State is one JSON document, written atomically shortly after every change, plus an append-only `events.jsonl` as an audit trail. On restart nobody from the previous run is alive: their cards are released, the queue is cleared, open cards get new agents.
+State is one JSON document, written atomically shortly after every change, plus an append-only `events.jsonl` as an audit trail. On restart nobody from the previous run is alive, so the queue is cleared and every card that was being worked on is reopened. The orchestrator's second job then does the rest: open cards get agents. The new agent receives the card's notebook, findings and the previous agent's workspace directory — the card remembers; the agent is replaceable.
+
+What is not restored is the interrupted agent's own context. That is why agents are told to note progress as they go, and why every agent's files live in a workspace that outlasts it.
+
+### Agents are stopped when their card is closed
+
+A closed card spends the agent's token, so nothing it does afterwards can reach the board. Agents that keep running anyway are stopped after a short grace period, and stopping always takes the agent's whole process tree with it — a stopped run must not keep computing, or spending, in the background.
 
 ```
 .wwresearch/

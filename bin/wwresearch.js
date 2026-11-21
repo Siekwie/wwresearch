@@ -32,8 +32,11 @@ Options for run
       --max-ideas N       Stop sending new researchers after N ideas (default 24, 0 = unlimited)
       --goal-file FILE    Read the goal from a file
       --model NAME        Model for Claude Code agents (e.g. sonnet, opus)
-      --allow TOOL        Allow an extra tool for agents, repeatable, e.g. --allow "Bash(python3:*)"
-      --yolo              Agents skip all permission checks. Only inside a sandbox or container!
+      --permissions MODE  What agents may do (default: auto)
+                            auto  shell, files and web; Claude Code's safety checks judge each command
+                            full  no permission checks at all. Only inside a sandbox or container!
+                            safe  board, files and web only; shell commands only via --allow
+      --allow TOOL        Pre-approve an extra tool, repeatable, e.g. --allow "Bash(python3:*)"
       --agent-cmd CMD     Use your own agent command instead of Claude Code. It gets the prompt on
                           stdin and WWR_MCP_URL, WWR_AGENT_TOKEN, WWR_PROMPT_FILE … in its environment
       --agent-timeout MIN Kill agents that run longer than MIN minutes (default 120, 0 = never)
@@ -72,7 +75,7 @@ function parseArgs(argv) {
   const spec = {
     '-n': 'agents', '--agents': 'agents', '--max-ideas': 'maxIdeas', '--goal-file': 'goalFile', '--model': 'model', '--allow': 'allow',
     '--agent-cmd': 'agentCmd', '--agent-timeout': 'agentTimeout', '--max-budget-usd': 'maxBudgetUsd', '-p': 'port', '--port': 'port',
-    '--host': 'host', '--dir': 'dir', '--speed': 'speed', '-o': 'out', '--out': 'out', '--url': 'url',
+    '--host': 'host', '--dir': 'dir', '--speed': 'speed', '-o': 'out', '--out': 'out', '--url': 'url', '--permissions': 'permissions',
   };
   const bools = { '--yolo': 'yolo', '--no-lenses': 'noLenses', '--fresh': 'fresh', '--no-open': 'noOpen', '-h': 'help', '--help': 'help', '-v': 'version', '--version': 'version' };
   for (let i = 0; i < argv.length; i++) {
@@ -167,6 +170,14 @@ function openBoard(flags, goal) {
     const board = new Board({ dir });
     if (goal && goal !== board.state.project.goal)
       die(`This directory already holds a board for a different goal:\n  "${board.state.project.title}"\nRun without a goal to resume it, or add --fresh to archive it and start over.`);
+    // Boards from before workspaces were recorded: point cards at the directory their agent used.
+    for (const card of Object.values(board.state.cards)) {
+      card.workspaces ??= [];
+      const agent = board.state.agents[card.agentId];
+      if (!agent || card.workspaces.length) continue;
+      const ws = agent.workspace ?? path.join(dir, 'workspaces', `${agent.id}-${agent.name}`);
+      if (fs.existsSync(ws)) card.workspaces.push(ws);
+    }
     board.recover();
     return { board, dir, resumed: true };
   }
@@ -216,14 +227,30 @@ async function cmdRun(flags, positional) {
   const agents = number(flags.agents, 'agents', 4);
   const maxIdeas = number(flags.maxIdeas, 'max-ideas', 24);
   const timeoutMin = number(flags.agentTimeout, 'agent-timeout', 120);
+  const permissions = flags.yolo ? 'full' : (flags.permissions ?? 'auto');
+  if (!['auto', 'full', 'safe'].includes(permissions)) die('--permissions must be auto, full or safe');
+  const cwd = process.cwd();
+
+  // What every agent is told about the machine it runs on.
+  const notes = [];
+  if (!flags.agentCmd) {
+    notes.push(
+      permissions === 'safe'
+        ? `You can use the board, read and write files, and use the web. Shell commands are restricted${flags.allow.length ? ` to: ${flags.allow.join(', ')}` : ' — if you needed to run code and could not, say so plainly'}.`
+        : 'You have a shell, file access and the web. Run real computations instead of reasoning about what code would do.',
+    );
+  }
+  if (process.platform === 'win32') notes.push('This machine runs Windows and your shell is Git Bash. If `python3` is missing or opens the Microsoft Store, use `python` or `py` instead.');
+  notes.push(`The working directory ${cwd} is shared with other agents. Do not modify or delete files you did not create, and change nothing outside it.`);
+
   const spawnAgent = processRunner({
     dir,
-    cwd: process.cwd(),
+    cwd,
     mcpUrl,
     command: flags.agentCmd ?? null,
     model: flags.model ?? null,
     allow: flags.allow,
-    yolo: Boolean(flags.yolo),
+    permissions,
     maxBudgetUsd: number(flags.maxBudgetUsd, 'max-budget-usd', 0, { integer: false }),
   });
   if (resumed) board.setOrchestrator({ ideasSpawned: Object.values(board.state.cards).filter((card) => card.kind === 'idea').length });
@@ -233,6 +260,7 @@ async function cmdRun(flags, positional) {
     target: agents,
     maxIdeas,
     lenses: !flags.noLenses,
+    notes,
     agentTimeoutMs: timeoutMin * 60_000,
     workspaceFor: (agent) => path.join(dir, 'workspaces', `${agent.id}-${agent.name}`),
   });
@@ -241,7 +269,8 @@ async function cmdRun(flags, positional) {
     ['Goal', board.state.project.title + (resumed ? c.dim('  (resumed)') : '')],
     ['Board', c.cyan(url)],
     ['MCP', mcpUrl],
-    ['Agents', `${agents} × ${flags.agentCmd ? 'custom command' : `Claude Code${flags.model ? ` (${flags.model})` : ''}`}${maxIdeas ? c.dim(`  · up to ${maxIdeas} ideas`) : ''}${flags.yolo ? c.yellow('  · permissions skipped') : ''}`],
+    ['Agents', `${agents} × ${flags.agentCmd ? 'custom command' : `Claude Code${flags.model ? ` (${flags.model})` : ''}`}${maxIdeas ? c.dim(`  · up to ${maxIdeas} ideas`) : ''}`],
+    ['Rights', flags.agentCmd ? 'decided by your agent command' : { auto: 'shell, files, web — with safety checks (auto)', full: c.yellow('everything, no checks (full)'), safe: 'files and web, no shell (safe)' }[permissions]],
     ['State', path.relative(process.cwd(), dir) || '.'],
   ]);
   board.on('event', logEvent);

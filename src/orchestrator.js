@@ -9,6 +9,8 @@
 import { EventEmitter } from 'node:events';
 import { researcherPrompt, cardPrompt, pickLens } from './prompts.js';
 
+const CLOSING = new Set(['proof_submitted', 'derivation_submitted', 'dead_end', 'review_submitted']);
+
 export class Orchestrator extends EventEmitter {
   /**
    * @param {object} opts
@@ -20,14 +22,16 @@ export class Orchestrator extends EventEmitter {
    * @param {number} [opts.agentTimeoutMs] kill agents that run longer than this (0 = never)
    * @param {(agent: object) => string|null} [opts.workspaceFor]
    */
-  constructor({ board, spawnAgent, target, maxIdeas = 0, lenses = true, agentTimeoutMs = 0, workspaceFor = () => null, retryDelayMs = 2000 }) {
+  constructor({ board, spawnAgent, target, maxIdeas = 0, lenses = true, agentTimeoutMs = 0, workspaceFor = () => null, retryDelayMs = 2000, finishGraceMs = 30_000, notes = [] }) {
     super();
     this.board = board;
     this.spawnAgent = spawnAgent;
     this.lenses = lenses;
     this.agentTimeoutMs = agentTimeoutMs;
     this.workspaceFor = workspaceFor;
+    this.notes = notes; // facts about the machine and permissions, shown to every agent
     this.retryDelayMs = retryDelayMs;
+    this.finishGraceMs = finishGraceMs;
     this.live = new Map();
     this.stopped = false;
     this.pending = null;
@@ -40,6 +44,15 @@ export class Orchestrator extends EventEmitter {
       if (ev.type === 'card_opened') this.schedule();
       // The board released an agent (lease expired): make sure its process is gone too.
       if (ev.type === 'agent_gone') this.live.get(ev.agentId)?.handle.kill();
+      // An agent closed its card: its work is done and its token is spent. Give the
+      // process a moment to wind down, then free the slot instead of letting it idle.
+      if (CLOSING.has(ev.type)) {
+        const rec = this.live.get(ev.agentId);
+        if (rec) {
+          rec.graceTimer = setTimeout(() => rec.handle.kill(), this.finishGraceMs);
+          rec.graceTimer.unref?.();
+        }
+      }
     };
     this.onSettings = () => this.schedule();
   }
@@ -84,10 +97,12 @@ export class Orchestrator extends EventEmitter {
     const agent = board.registerAgent({ role, origin: 'orchestrator', cardId: card?.id ?? null });
     const goal = board.state.project.goal;
     const workspace = this.workspaceFor(agent);
+    agent.workspace = workspace;
+    const { notes } = this;
     const prompt =
       role === 'researcher'
-        ? researcherPrompt({ goal, token: agent.token, lens: this.lenses ? pickLens(this.lensOffset + o.ideasSpawned) : null, workspace })
-        : cardPrompt({ goal, token: agent.token, kind: card.kind, workspace });
+        ? researcherPrompt({ goal, token: agent.token, lens: this.lenses ? pickLens(this.lensOffset + o.ideasSpawned) : null, workspace, notes })
+        : cardPrompt({ goal, token: agent.token, kind: card.kind, workspace, notes });
 
     let handle;
     try {
@@ -116,6 +131,7 @@ export class Orchestrator extends EventEmitter {
     const { board } = this;
     const { agent } = rec;
     clearTimeout(rec.timer);
+    clearTimeout(rec.graceTimer);
     this.live.delete(agent.id);
     const o = board.state.orchestrator;
     const patch = { live: this.live.size };
@@ -132,13 +148,15 @@ export class Orchestrator extends EventEmitter {
       delay = this.retryDelayMs * this.launchFailures;
       if (this.launchFailures >= 3) {
         patch.paused = true;
-        patch.error = `Agents exit without ever contacting the board${res.error ? ` — ${res.error}` : res.code != null ? ` (exit code ${res.code})` : ''}. Check the agent command, then resume.`;
+        patch.error = `Agents exit without ever contacting the board${res.error ? ` — ${res.error}` : res.code != null ? ` (exit code ${res.code})` : ''}. Check the agent command (and try another --permissions mode), then resume.`;
         this.launchFailures = 0;
       }
     } else if (!neverShowedUp) this.launchFailures = 0;
 
     board.setOrchestrator(patch);
-    board.agentGone(agent.id, res.error ? `failed: ${res.error}` : 'process exited');
+    // While shutting down we kill the agents ourselves. Leave their cards as they
+    // are: the next start reopens them without counting it against the card.
+    if (!this.stopped) board.agentGone(agent.id, res.error ? `failed: ${res.error}` : 'process exited');
     this.emit('exited', { agent, ...res });
     this.schedule(delay);
   }
@@ -151,6 +169,7 @@ export class Orchestrator extends EventEmitter {
     this.board.off('orchestrator', this.onSettings);
     for (const rec of this.live.values()) {
       clearTimeout(rec.timer);
+      clearTimeout(rec.graceTimer);
       rec.handle.kill();
     }
   }

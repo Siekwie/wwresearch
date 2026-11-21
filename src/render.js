@@ -102,11 +102,14 @@ const WORK_RULES = `WHILE YOU WORK
 - add_finding(statement, kind, confidence): every reusable insight, including negative ones. Reference earlier findings with builds_on / contradicts.
 - search_knowledge(query) / read_card(id): look up what others established. Build on it instead of redoing it.
 
+- Do the work for real: run the code, look things up. A result nobody executed is not a result.
+
 HOW YOU FINISH (exactly one, then stop)
 - submit_proof: you believe the goal is solved. Give the precise claim and the complete argument. Do not polish or self-certify it — an independent agent reviews it.
 - submit_derivation: you solved a part, or the approach survived every attempt to refute it but is not finished. State what is established and the concrete next step; a fresh agent continues from there.
 - report_dead_end: the approach does not work. Say exactly why — that reason saves every later agent the same trip.
-Be honest about which one it is. A clear dead end is worth more than an inflated proof.`;
+Be honest about which one it is. A clear dead end is worth more than an inflated proof.
+If your environment stopped you (a command was denied, a tool is missing) and you established nothing, do not dress that up as a partial result: call report_dead_end with why_it_fails starting with "BLOCKED:" and the exact command and error.`;
 
 export function renderClaimed(res) {
   return [
@@ -119,6 +122,17 @@ export function renderClaimed(res) {
 function notesBlock(notes, title) {
   if (!notes?.length) return [];
   return ['', title, ...notes.map((n) => `- ${n.system ? '[system] ' : ''}${n.text}`)];
+}
+
+/** What a previous agent left on a reopened card: findings and files (notes are rendered separately). */
+function handoverBlock(b) {
+  const out = [];
+  if (b.previousFindings?.length) {
+    out.push('', 'FINDINGS ALREADY RECORDED ON THIS CARD');
+    for (const f of b.previousFindings) out.push(`${f.id} [${f.kind} · ${f.confidence}] ${f.statement}`);
+  }
+  if (b.previousWorkspaces?.length) out.push('', 'FILES LEFT BY THE PREVIOUS AGENT (scripts, data, partial output — read them before redoing anything)', ...b.previousWorkspaces.map((w) => `- ${w}`));
+  return out;
 }
 
 export function renderBriefing({ agent, card, briefing: b }, { showToken = false } = {}) {
@@ -140,7 +154,7 @@ export function renderBriefing({ agent, card, briefing: b }, { showToken = false
     );
     if (b.assumptions) out.push('', 'STATED ASSUMPTIONS', b.assumptions);
     if (b.artifacts?.length) out.push('', 'ARTIFACTS (files the author points to)', ...b.artifacts.map((a) => `- ${a}`));
-    out.push(...notesBlock(b.previousNotes, 'NOTES LEFT ON THIS REVIEW CARD BY A PREVIOUS REVIEWER'));
+    out.push(...notesBlock(b.previousNotes, 'NOTES LEFT ON THIS REVIEW CARD BY A PREVIOUS REVIEWER'), ...handoverBlock(b));
     out.push(
       '',
       'HOW TO REVIEW',
@@ -150,6 +164,25 @@ export function renderBriefing({ agent, card, briefing: b }, { showToken = false
       '   what_was_found · assessment (why you believe it, or exactly where it breaks) · independent_test · why_independent',
       'Only say "verified" if you could not break it and would defend it yourself. If unsure: "inconclusive". The report is written for the human user — plain, specific, no jargon without explanation.',
       'You may use note() and add_finding() while you work. Then stop: one agent, one card.',
+    );
+    return out.join('\n');
+  }
+  if (!b.parentId) {
+    // An idea card whose agent was interrupted: take it over where it stopped.
+    out.push(
+      `You are taking over ${card.id}: "${card.title}". The agent that claimed it was interrupted before it finished; the idea and everything it left behind are yours now. You skipped the queue.`,
+      '',
+      'GOAL',
+      b.goal,
+      '',
+      'THE APPROACH OF THIS CARD',
+      b.approach,
+      ...notesBlock(b.previousNotes, 'LAB NOTEBOOK SO FAR'),
+      ...handoverBlock(b),
+      '',
+      'Continue from where it stopped instead of starting over. Check what is already there first.',
+      '',
+      WORK_RULES,
     );
     return out.join('\n');
   }
@@ -172,7 +205,7 @@ export function renderBriefing({ agent, card, briefing: b }, { showToken = false
     for (const f of b.parentFindings) out.push(`${f.id} [${f.kind} · ${f.confidence}] ${f.statement}`);
   }
   if (b.lineage?.length > 1) out.push('', `Lineage: ${b.lineage.map((l) => l.id).join(' → ')} → ${card.id}`);
-  out.push(...notesBlock(b.previousNotes, 'NOTES LEFT ON THIS CARD BY A PREVIOUS AGENT'));
+  out.push(...notesBlock(b.previousNotes, 'NOTES LEFT ON THIS CARD BY A PREVIOUS AGENT'), ...handoverBlock(b));
   out.push(
     '',
     `You are not the author of what you inherit: sanity-check it before you build on it. read_card("${b.parentId}") shows the full notes.`,

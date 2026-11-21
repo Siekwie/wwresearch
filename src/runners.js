@@ -9,6 +9,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { SERVER_NAME } from './mcp.js';
 
+const WINDOWS = process.platform === 'win32';
+
 export const SAFE_TOOLS = [`mcp__${SERVER_NAME}`, 'Read', 'Glob', 'Grep', 'Write', 'Edit', 'WebSearch', 'WebFetch'];
 
 /**
@@ -19,11 +21,14 @@ export const SAFE_TOOLS = [`mcp__${SERVER_NAME}`, 'Read', 'Glob', 'Grep', 'Write
  * @param {string} [opts.command]  custom shell command instead of Claude Code
  * @param {string} [opts.model]    model passed to Claude Code
  * @param {string[]} [opts.allow]  extra allowed tools for Claude Code, e.g. "Bash(python3:*)"
- * @param {boolean} [opts.yolo]    skip all permission checks (sandbox only!)
+ * @param {'auto'|'full'|'safe'} [opts.permissions]
+ *   auto: shell, files and web, with Claude Code's own safety checks on what gets run (default)
+ *   full: no permission checks at all — sandbox only
+ *   safe: board, files and web only; shell commands only as listed in `allow`
  * @param {number} [opts.maxBudgetUsd] per-agent spending cap passed to Claude Code
  * @param {string[]} [opts.extraArgs]  extra arguments appended to the Claude Code command
  */
-export function processRunner({ dir, cwd, mcpUrl, command = null, model = null, allow = [], yolo = false, maxBudgetUsd = 0, extraArgs = [] }) {
+export function processRunner({ dir, cwd, mcpUrl, command = null, model = null, allow = [], permissions = 'auto', maxBudgetUsd = 0, extraArgs = [] }) {
   const logDir = path.join(dir, 'logs');
   const promptDir = path.join(dir, 'prompts');
   fs.mkdirSync(logDir, { recursive: true });
@@ -50,15 +55,16 @@ export function processRunner({ dir, cwd, mcpUrl, command = null, model = null, 
 
     let child;
     if (command) {
-      child = spawn(command, { cwd, env, shell: true, stdio: ['pipe', 'pipe', 'pipe'] });
+      child = spawn(command, { cwd, env, shell: true, detached: !WINDOWS, stdio: ['pipe', 'pipe', 'pipe'] });
     } else {
       const args = ['-p', '--mcp-config', mcpConfig, '--output-format', 'stream-json', '--verbose'];
-      if (yolo) args.push('--dangerously-skip-permissions');
-      else args.push('--permission-mode', 'acceptEdits', '--allowedTools', [...SAFE_TOOLS, ...allow].join(','));
+      // The board, files and the web are always pre-approved, so no agent stalls on them.
+      if (permissions === 'full') args.push('--dangerously-skip-permissions');
+      else args.push('--permission-mode', permissions === 'safe' ? 'acceptEdits' : 'auto', '--allowedTools', [...SAFE_TOOLS, ...allow].join(','));
       if (model) args.push('--model', model);
       if (maxBudgetUsd > 0) args.push('--max-budget-usd', String(maxBudgetUsd));
       args.push(...extraArgs);
-      child = spawn('claude', args, { cwd, env, shell: process.platform === 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
+      child = spawn('claude', args, { cwd, env, shell: WINDOWS, detached: !WINDOWS, stdio: ['pipe', 'pipe', 'pipe'] });
     }
 
     const log = fs.createWriteStream(path.join(logDir, `${agent.id}-${agent.name}.log`));
@@ -104,8 +110,16 @@ export function processRunner({ dir, cwd, mcpUrl, command = null, model = null, 
 
     return {
       exited,
+      // Kill the agent together with everything it started (shells, scripts),
+      // otherwise a stopped run keeps computing — and spending — in the background.
       kill() {
-        if (child.exitCode === null && !child.killed) child.kill('SIGTERM');
+        if (child.exitCode !== null || !child.pid) return;
+        try {
+          if (WINDOWS) spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => child.kill());
+          else process.kill(-child.pid, 'SIGTERM');
+        } catch {
+          child.kill();
+        }
       },
     };
   };

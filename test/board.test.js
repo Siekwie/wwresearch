@@ -243,17 +243,33 @@ test('a dead end records the obstruction', () => {
   assert.equal(board.search({ query: 'period prefix' })[0].id, f.id);
 });
 
-test('when an agent disappears its card is released', () => {
+test('when an agent disappears a fresh agent takes over its card, with everything left on it', () => {
   const { board } = setup({ maxReopens: 1 });
-  const idea = claim(board, ...PARITY);
-  board.agentGone(idea.agent.id, 'process exited');
-  assert.equal(board.state.cards[idea.card.id].status, 'abandoned');
-  assert.throws(() => board.note({ token: idea.token, text: 'still here?' }), { code: 'gone' });
-  // abandoned ideas are free to retry: no duplicate gate
+  const first = board.registerAgent({ role: 'researcher', workspace: '/work/first' });
+  board.joinQueue({ token: first.token, idea: 'Use a parity argument on the fraction, carefully.' });
+  board.peekTurn(first.token);
+  const { card } = board.claimCard({ token: first.token, title: PARITY[0], approach: PARITY[1] });
+  board.note({ token: first.token, text: 'Wrote search.py; first run reached 61.' });
+  const finding = board.addFinding({ token: first.token, statement: 'The square of an odd number is odd.', kind: 'lemma', confidence: 'proven' });
+  board.agentGone(first.id, 'process exited');
+  assert.equal(board.state.cards[card.id].status, 'open', 'the idea is not lost');
+  assert.throws(() => board.note({ token: first.token, text: 'still here?' }), { code: 'gone' });
+
+  const second = board.enterCard({});
+  assert.equal(second.card.id, card.id);
+  assert.notEqual(second.agent.id, first.id);
+  assert.equal(second.briefing.approach, PARITY[1]);
+  assert.ok(second.briefing.previousNotes.some((n) => n.text.includes('first run reached 61')));
+  assert.deepEqual(second.briefing.previousFindings.map((f) => f.id), [finding.id]);
+  assert.deepEqual(second.briefing.previousWorkspaces, ['/work/first']);
+
+  // after maxReopens the card is given up — and its idea is then free to retry through the queue
+  board.agentGone(second.agent.id, 'crashed');
+  assert.equal(board.state.cards[card.id].status, 'abandoned');
   const retry = claim(board, ...PARITY);
   assert.equal(retry.claimed, true);
 
-  // review cards are handed to a fresh agent instead (up to maxReopens)
+  // a review that is given up leaves its proof marked as unreviewed
   const { review } = board.submitProof({ token: retry.token, ...PROOF });
   const r1 = board.enterCard({ card_id: review.id }).agent;
   board.agentGone(r1.id, 'crashed');
@@ -274,7 +290,8 @@ test('cards without activity are released after the lease', () => {
   assert.equal(board.state.cards[card.id].status, 'active');
   advance(2 * 60_000);
   board.tick();
-  assert.equal(board.state.cards[card.id].status, 'abandoned');
+  assert.equal(board.state.cards[card.id].status, 'open', 'released for a fresh agent');
+  assert.throws(() => board.note({ token, text: 'too late' }), { code: 'gone' });
 });
 
 test('reserved cards cannot be taken by someone else', () => {
@@ -299,13 +316,14 @@ test('input is validated with messages an agent can act on', () => {
   assert.throws(() => new Board({}), /"goal" is required/);
 });
 
-test('state survives a restart; nobody from the old run keeps a card', () => {
+test('state survives a restart; interrupted cards are kept and handed to fresh agents', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wwr-test-'));
   try {
     const board = new Board({ dir, goal: GOAL });
     const done = claim(board, ...PARITY);
     board.reportDeadEnd({ token: done.token, why_it_fails: 'The argument needs a lemma that is not available.' });
     const running = claim(board, 'Descent', 'Construct from one solution a strictly smaller positive solution and descend forever.');
+    board.note({ token: running.token, text: 'Half way through the descent argument.' });
     board.joinQueue({ idea: 'An idea that was waiting in the queue.' });
     board.flush();
 
@@ -315,8 +333,16 @@ test('state survives a restart; nobody from the old run keeps a card', () => {
     again.recover();
     assert.equal(again.state.queue.length, 0);
     assert.equal(again.state.cards[done.card.id].status, 'dead_end');
-    assert.equal(again.state.cards[running.card.id].status, 'abandoned');
+    assert.equal(again.state.cards[running.card.id].status, 'open');
+    assert.equal(again.state.cards[running.card.id].reopens, 0, 'a restart does not count against the card');
     assert.throws(() => again.note({ token: running.token, text: 'hello?' }), { code: 'gone' });
+    const takeover = again.enterCard({});
+    assert.equal(takeover.card.id, running.card.id);
+    assert.ok(takeover.briefing.previousNotes.some((n) => n.text.includes('Half way through')));
+    // restarting again and again never wears a card out
+    again.recover();
+    again.recover();
+    assert.equal(again.state.cards[running.card.id].status, 'open');
     const events = fs.readFileSync(path.join(dir, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
     assert.ok(events.some((e) => e.type === 'dead_end'));
   } finally {

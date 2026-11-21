@@ -28,7 +28,14 @@ export function pickLens(n) {
 
 const TOOLS = 'the "wwresearch" MCP tools';
 
-export function researcherPrompt({ goal, token = null, lens = null, workspace = null }) {
+/** Facts about the machine and the agent's permissions, appended to every prompt. */
+function environment(workspace, notes) {
+  const lines = [...(notes ?? [])];
+  if (workspace) lines.push(`Put scratch files in ${workspace} — your private workspace for this card. If someone has to continue your card, they get this directory.`);
+  return lines.length ? `\nYOUR ENVIRONMENT\n${lines.map((l) => `- ${l}`).join('\n')}\n` : '';
+}
+
+export function researcherPrompt({ goal, token = null, lens = null, workspace = null, notes = [] }) {
   return `You are one of many research agents working on the same goal in parallel. You coordinate through a shared board, using ${TOOLS}. The board exists because agents given the same goal tend to pick the same obvious approach — it makes sure every agent explores a different idea.
 
 GOAL
@@ -39,17 +46,19 @@ WHAT TO DO
 2. Call join_queue with your idea in 1–3 sentences${token ? ` and token "${token}"` : ''}.
 3. Call wait_turn until it is your turn. You then receive the board.
 4. Check whether your idea is already on the board — in substance, not just in wording. If it is, come up with a different approach that is not there yet. Then call claim_card.
-5. Work on your card — this is the actual research. Use every tool you have. Record progress with note and every reusable insight with add_finding (negative results too).
+5. Work on your card — this is the actual research. Use every tool you have: run code, search the web. Your knowledge has a cutoff, so check early what is already known or solved and build on it. Record progress with note and every reusable insight with add_finding (negative results too).
 6. Finish with exactly one of submit_proof, submit_derivation or report_dead_end. Be honest about which one it is: a precise dead end is a useful result, an inflated proof is not.
 7. Then stop. One agent works on exactly one card, and never verifies its own result — an independent agent does that.
-${workspace ? `\nPut scratch files in ${workspace} (your private workspace for this card).\n` : ''}`;
+${environment(workspace, notes)}`;
 }
 
-export function cardPrompt({ goal, token = null, cardId = null, kind, workspace = null }) {
+export function cardPrompt({ goal, token = null, cardId = null, kind, workspace = null, notes = [] }) {
   const role =
     kind === 'review'
       ? `You are an independent reviewer. Another agent claims to have solved the goal below. You did not write that proof and have no stake in it — your job is to try to break it, and then to write a short report for the human user.`
-      : `You continue a line of research that another agent started. It produced a partial result and a concrete next step; you take it from there.`;
+      : kind === 'idea'
+        ? `You take over a research card whose previous agent was interrupted. Its idea, notes and files are waiting for you; you continue where it stopped.`
+        : `You continue a line of research that another agent started. It produced a partial result and a concrete next step; you take it from there.`;
   const enter = token ? `enter_card with token "${token}"` : cardId ? `enter_card with card_id "${cardId}"` : 'enter_card (no arguments — it assigns you the next open card)';
   return `${role} You coordinate through a shared research board, using ${TOOLS}.
 
@@ -58,7 +67,7 @@ ${goal}
 
 WHAT TO DO
 1. Call ${enter}. It returns your full briefing.
-2. Follow the briefing. Use every tool you have to do the work properly.
+2. Follow the briefing. Use every tool you have to do the work properly: run code, search the web for what is already known.
 3. Finish the card with the tool the briefing names. Then stop: one agent works on exactly one card.
-${workspace ? `\nPut scratch files in ${workspace} (your private workspace for this card).\n` : ''}`;
+${environment(workspace, notes)}`;
 }

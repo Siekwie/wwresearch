@@ -126,7 +126,9 @@ git clone https://github.com/Siekwie/wwresearch && cd wwresearch
 node bin/wwresearch.js run --goal-file my-problem.md --agents 8
 ```
 
-This starts the board at `http://localhost:4777`, opens it in your browser, and keeps 8 agents working until 24 ideas have been explored (change with `--max-ideas`). State lives in `./.wwresearch`, so you can stop and resume at any time.
+This starts the board at `http://localhost:4777`, opens it in your browser, and keeps 8 agents working until 24 ideas have been explored (change with `--max-ideas`).
+
+State lives in `./.wwresearch`. Stop with Ctrl+C and start again with the same command (no goal needed): nothing is lost. Cards that were being worked on are handed to fresh agents, together with the notes, findings and files that were already there.
 
 Write the goal like you would brief a capable colleague: the exact statement, what counts as solved, and what is out of scope. [`examples/goal-template.md`](examples/goal-template.md) is a starting point.
 
@@ -135,14 +137,22 @@ Write the goal like you would brief a capable colleague: the exact statement, wh
 | `-n, --agents N` | Agents to keep alive (default 4). Adjustable live in the UI. |
 | `--max-ideas N` | Stop sending new researchers after N ideas (default 24, `0` = unlimited). |
 | `--model NAME` | Model for the agents, e.g. `sonnet` or `opus`. |
-| `--allow TOOL` | Give agents an extra tool, repeatable: `--allow "Bash(python3:*)"`. |
-| `--yolo` | Agents skip all permission checks. **Only inside a sandbox or container.** |
+| `--permissions MODE` | What agents may do: `auto` (default), `full` or `safe` — see below. |
+| `--allow TOOL` | Pre-approve an extra tool, repeatable: `--allow "Bash(python3:*)"`. |
 | `--max-budget-usd X` | Spending cap per agent. |
 | `--agent-timeout MIN` | Kill agents that run longer than this (default 120). |
 | `--agent-cmd CMD` | Use your own agent command instead of Claude Code. |
 | `--fresh` | Archive the existing board in this directory and start over. |
 
-**What agents may do.** By default agents can use the board, read and write files, and search the web — but not run shell commands. Real research usually needs to run code: allow specific commands with `--allow`, or use `--yolo` in an isolated environment. Agents are told to keep scratch files in a private workspace under `.wwresearch/workspaces/`.
+**What agents may do.** Research agents need to run code and look things up, so by default they get a shell, file access and the web:
+
+| `--permissions` | Agents can… |
+|---|---|
+| `auto` (default) | use the shell, files and the web. Claude Code's own safety checks judge each command and block the dangerous ones. |
+| `full` | do anything, with no checks at all. **Only inside a sandbox or container.** |
+| `safe` | use the board, files and the web, but no shell — except commands you list with `--allow`. |
+
+Agents run in the directory you start wwresearch from, with your user's rights. They are told to keep scratch files in a private workspace under `.wwresearch/workspaces/` and to leave everything else alone — but that is an instruction, not a wall. For goals that pull in untrusted material from the web, use a container.
 
 **What it costs.** One agent per card, plus one per follow-up and one per review. `--max-ideas`, `--max-budget-usd` and `--agent-timeout` bound the spend; the UI shows the running total when the agent reports it. Start small.
 
@@ -198,7 +208,7 @@ It can't. `submit_proof` only opens a review; a different agent, which never see
 It means an independent agent tried to break it and could not. That is a much stronger signal than self-assessment, but it is still a model's judgement — which is exactly why every report ends with an independent test for you.
 
 **What happens when an agent crashes?**
-Its card is released. Ideas become free to retry; follow-up and review cards are handed to a fresh agent. If agents fail to start at all (not logged in, command missing), the orchestrator pauses instead of burning through the budget, and tells you why.
+Its card is reopened and a fresh agent takes it over, with the notes, findings and files the first one left. The same happens to every running card when you stop and restart the board. If agents fail to start at all (not logged in, command missing), the orchestrator pauses instead of burning through the budget, and tells you why.
 
 **Only for mathematics?**
 No. "Proof" means "evidence that the goal is met": a proof, a reproducing script, a benchmark result, a counterexample. The demo uses √2 because everyone can check it.
