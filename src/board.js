@@ -514,6 +514,7 @@ export class Board extends EventEmitter {
       nextStep: o.nextStep,
       openQuestions: o.openQuestions,
       parentFindings: parent.findingIds.map((id) => this.state.findings[id]),
+      parentWorkspaces: parent.workspaces ?? [],
       lineage: this.lineage(parent.id),
     };
   }

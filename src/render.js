@@ -204,6 +204,7 @@ export function renderBriefing({ agent, card, briefing: b }, { showToken = false
     out.push('', `FINDINGS FROM ${b.parentId}`);
     for (const f of b.parentFindings) out.push(`${f.id} [${f.kind} · ${f.confidence}] ${f.statement}`);
   }
+  if (b.parentWorkspaces?.length) out.push('', `FILES FROM ${b.parentId} (scripts, data, output — reuse them instead of rewriting)`, ...b.parentWorkspaces.map((w) => `- ${w}`));
   if (b.lineage?.length > 1) out.push('', `Lineage: ${b.lineage.map((l) => l.id).join(' → ')} → ${card.id}`);
   out.push(...notesBlock(b.previousNotes, 'NOTES LEFT ON THIS CARD BY A PREVIOUS AGENT'), ...handoverBlock(b));
   out.push(

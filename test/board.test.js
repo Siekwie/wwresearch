@@ -203,6 +203,7 @@ test('a refuted proof becomes knowledge: a refutation finding that contradicts t
 test('a derivation opens a follow-up card that a fresh agent enters without queueing', () => {
   const { board } = setup();
   const first = claim(board, 'Descent', 'Construct from one solution a strictly smaller positive solution and descend forever.');
+  board.state.cards[first.card.id].workspaces.push('/work/descent');
   const lemma = board.addFinding({ token: first.token, statement: 'Every solution yields another solution.', kind: 'lemma', confidence: 'proven' });
   const { card, followup } = board.submitDerivation({ token: first.token, established: 'Every solution yields another solution.', next_step: 'Show that the new solution is strictly smaller and positive.' });
   assert.equal(card.status, 'derivation');
@@ -214,6 +215,7 @@ test('a derivation opens a follow-up card that a fresh agent enters without queu
   assert.equal(second.card.id, followup.id);
   assert.equal(second.agent.role, 'followup');
   assert.equal(second.briefing.established, 'Every solution yields another solution.');
+  assert.deepEqual(second.briefing.parentWorkspaces, ['/work/descent'], 'the follow-up agent is pointed at the files it inherits');
   assert.deepEqual(second.briefing.parentFindings.map((f) => f.id), [lemma.id, card.outcome.findingId]);
   assert.throws(() => board.joinQueue({ token: second.agent.token, idea: 'A follow-up agent must not use the queue.' }), { code: 'wrong_role' });
 
