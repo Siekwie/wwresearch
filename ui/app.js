@@ -499,7 +499,7 @@ async function renderDrawer() {
     const pivot = d.pivotedFrom
       ? `<div class="pivot"><b>↪ Redirected by the board.</b> This agent arrived with the idea “${esc(d.originalIdea)}” — already covered by ${cardLink(d.pivotedFrom)}. It chose this approach instead.</div>`
       : d.differentBecause
-        ? `<div class="pivot"><b>Looked like a duplicate.</b> The agent's justification: “${esc(d.differentBecause)}”</div>`
+        ? `<div class="pivot"><b>${d.flaggedSimilar ? 'The board flagged this as a possible duplicate.' : 'Close to an existing card.'}</b> Why the agent says it is different: “${esc(d.differentBecause)}”</div>`
         : '';
     const reviews = d.reviews.filter((r) => r.outcome && d.kind !== 'review');
     let dock = '';

@@ -384,7 +384,7 @@ export class Board extends EventEmitter {
     }
 
     const card = this.#createCard({ kind: 'idea', title, approach, status: 'active', agent });
-    Object.assign(card, { originalIdea: entry.idea, differentBecause, pivotedFrom: pivoted ? pivotedFrom : null, buildsOn });
+    Object.assign(card, { originalIdea: entry.idea, differentBecause, flaggedSimilar: Boolean(top && top.score >= this.config.similarGate), pivotedFrom: pivoted ? pivotedFrom : null, buildsOn });
     this.state.queue.shift();
     agent.state = 'working';
     agent.cardId = card.id;
