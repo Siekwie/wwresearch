@@ -7,10 +7,12 @@ import { processRunner } from '../src/runners.js';
 
 // A fake agent that starts a long-running background process (like an agent's
 // `nohup ./search &`), records its pid, and then either exits or keeps running.
+// On Windows it even detaches (the job still holds it). On POSIX `detached`
+// means setsid, which deliberately leaves the process group; `nohup … &` doesn't.
 const AGENT = `
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
-const bg = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+const bg = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: process.platform === 'win32', stdio: 'ignore' });
 bg.unref();
 fs.writeFileSync(process.env.WWR_WORKSPACE + '/bg.pid', String(bg.pid));
 if (process.env.STAY) setInterval(() => {}, 1000);
