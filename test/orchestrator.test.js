@@ -190,3 +190,42 @@ test('the demo swarm runs to completion against the real server', async () => {
   const refutation = Object.values(board.state.findings).find((f) => f.kind === 'refutation');
   assert.ok(cards.some((c) => c.buildsOn?.includes(refutation.id)));
 });
+
+test('shut down kills every live agent, hands cards on and spawns nothing until started again', async () => {
+  const board = new Board({ goal: 'Find a proof of the statement.' });
+  const { spawned, spawnAgent } = manualRunner();
+  const orch = new Orchestrator({ board, spawnAgent, target: 2, retryDelayMs: 1 }).start();
+  await until(() => spawned.length === 2);
+  const author = spawned[0].agent;
+  board.joinQueue({ token: author.token, idea: 'A first idea for the statement.' });
+  board.peekTurn(author.token);
+  board.claimCard({ token: author.token, title: 'First idea', approach: 'Try the first idea carefully and in detail.' });
+  const { followup } = board.submitDerivation({ token: author.token, established: 'The base case holds.', next_step: 'Extend the base case to all cases.' });
+  spawned[0].exit({ code: 0 });
+  await until(() => spawned.some((s) => s.role === 'followup'));
+  const worker = spawned.find((s) => s.role === 'followup');
+  board.enterCard({ token: worker.agent.token });
+  await until(() => board.state.orchestrator.live === 2);
+
+  let stopped = null;
+  orch.on('shutdown', (e) => (stopped = e.agents));
+  board.emit('shutdown'); // what POST /api/shutdown does
+  assert.equal(stopped, 2);
+  assert.ok(spawned.slice(1).every((s) => s.killed), 'every live agent was killed');
+  await until(() => board.state.orchestrator.live === 0);
+  const o = board.state.orchestrator;
+  assert.equal(o.paused, true);
+  assert.equal(o.error, null, 'agents we killed are not reported as failed launches');
+  assert.equal(board.state.agents[worker.agent.id].endReason, 'shut down from the board');
+  const card = board.state.cards[followup.id];
+  assert.equal(card.status, 'open', 'the follow-up card waits for a fresh agent');
+  assert.equal(card.reopens, 0, 'a shutdown does not use up a retry');
+  await new Promise((r) => setTimeout(r, 30));
+  const count = spawned.length;
+  assert.equal(count, 3, 'nothing is spawned while shut down');
+
+  board.setOrchestrator({ paused: false });
+  await until(() => spawned.length >= count + 2);
+  assert.ok(spawned.slice(count).some((s) => s.role === 'followup' && s.card.id === followup.id), 'starting again picks the card up');
+  orch.stop();
+});

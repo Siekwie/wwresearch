@@ -259,7 +259,11 @@ function renderHeader() {
         <div class="value"><b>${o.live} / ${o.target}</b><span>agents live / target</span></div>
         <button data-act="more" aria-label="More agents">+</button>
       </div>
-      <button class="btn" data-act="${o.paused ? 'resume' : 'pause'}">${o.paused ? 'Resume' : 'Pause'}</button>`);
+      ${
+        o.paused
+          ? `<button class="btn primary" data-act="resume" title="Start agents again">Start again</button>`
+          : `<button class="btn danger" data-act="shutdown" title="Kill every running agent and everything it started, right now"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M8 1.5v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M4.4 3.6a5.5 5.5 0 1 0 7.2 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>Shut down</button>`
+      }`);
   }
   controls.push(`<button class="btn${o.enabled ? '' : ' primary'}" data-act="dock">Dock an agent</button>`);
   controls.push(`<button class="btn icon" data-act="theme" title="Switch light / dark" aria-label="Switch theme"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.5a6.5 6.5 0 0 1 0 13z" fill="currentColor"/></svg></button>`);
@@ -272,7 +276,10 @@ function renderHeader() {
 
   const banners = [];
   if (o.error) banners.push(`<div class="banner bad"><span>⚠ ${esc(o.error)}</span><span class="spacer"></span><button class="btn" data-act="resume">Resume</button></div>`);
-  else if (o.paused) banners.push(`<div class="banner info">Paused — no new agents are started. Agents that are already running finish their cards.</div>`);
+  else if (o.paused)
+    banners.push(
+      `<div class="banner info"><span>${o.live ? `Shutting down — waiting for ${plural(o.live, 'agent')} to exit…` : 'Shut down — no agents are running, and every process they started was stopped too.'} The board stays readable.</span><span class="spacer"></span><button class="btn" data-act="resume">Start again</button></div>`,
+    );
   if (verified) banners.push(`<div class="banner good"><span>✔ ${plural(verified, 'proof')} verified by an independent agent. <a href="#reports">Read the ${verified === 1 ? 'report' : 'reports'} →</a></span></div>`);
   if (o.enabled && o.idle && !o.paused)
     banners.push(
@@ -600,7 +607,12 @@ document.addEventListener('click', (ev) => {
     const o = state?.orchestrator;
     if (act === 'more') setOrchestrator({ target: o.target + 1 });
     else if (act === 'fewer') setOrchestrator({ target: Math.max(0, o.target - 1) });
-    else if (act === 'pause') setOrchestrator({ paused: true });
+    else if (act === 'shutdown') {
+      const n = o.live;
+      const msg = `Shut down ${plural(n, 'agent')} now?\n\nEvery running agent and everything it started (shells, scripts, background computations) is killed immediately. Unfinished work on their cards is lost; follow-up and review cards are handed to fresh agents when you start again.`;
+      if (n && !confirm(msg)) return;
+      fetch('/api/shutdown', { method: 'POST' });
+    }
     else if (act === 'resume') setOrchestrator({ paused: false });
     else if (act === 'more-ideas') setOrchestrator({ maxIdeas: o.maxIdeas + Math.max(o.target, 4) * 2 });
     else if (act === 'dock') openDock();

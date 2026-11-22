@@ -243,6 +243,17 @@ button {
 .btn.primary:hover {
   filter: brightness(1.08);
 }
+.btn.danger {
+  color: var(--refuted);
+  border-color: color-mix(in srgb, var(--refuted) 45%, var(--line-strong));
+}
+.btn.danger:hover {
+  background: var(--refuted-soft);
+}
+.btn.danger svg {
+  vertical-align: -2px;
+  margin-right: 5px;
+}
 .btn.icon {
   padding: 6px 9px;
   display: inline-grid;
@@ -839,6 +850,11 @@ svg.focus .g-label:not(.near) {
 .g-node.sel rect {
   stroke: var(--text);
   stroke-width: 2.5;
+}
+.graph svg .g-node circle.g-hit {
+  fill: transparent;
+  stroke: none;
+  pointer-events: all;
 }
 svg.focus .g-node:not(.near),
 svg.focus .g-edge:not(.near) {

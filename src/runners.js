@@ -6,10 +6,55 @@
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { SERVER_NAME } from './mcp.js';
 
 const WINDOWS = process.platform === 'win32';
+const JOB_WRAPPER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'jobwrap.ps1');
+
+/**
+ * Start an agent so that it and everything it starts can be stopped as one:
+ * on Windows inside a Job Object (see jobwrap.ps1), elsewhere as its own
+ * process group. Either way at lower CPU priority, so the desktop stays usable.
+ */
+function spawnTree({ command, file, args = [] }, { cwd, env }) {
+  if (WINDOWS) {
+    // cmd.exe runs it, exactly as `spawn(file, args, { shell: true })` would.
+    const commandLine = command ?? [file, ...args].join(' ');
+    const ps = ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', JOB_WRAPPER];
+    return spawn('powershell.exe', ps, { cwd, env: { ...env, WWR_JOB_CMD: commandLine }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  }
+  const opts = { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] };
+  const child = command ? spawn(command, { ...opts, shell: true }) : spawn(file, args, opts);
+  try {
+    if (child.pid) os.setPriority(child.pid, 10); // inherited by everything it starts
+  } catch {
+    /* not permitted: run at normal priority */
+  }
+  return child;
+}
+
+/** Stop a process tree started by spawnTree. `force` skips the polite request. */
+export function killTree(child, { force = false } = {}) {
+  if (!child.pid) return;
+  if (WINDOWS) {
+    // Kills the wrapper and its tree; closing the wrapper's job kills the rest.
+    spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => child.kill());
+    return;
+  }
+  const signal = (sig) => {
+    try {
+      process.kill(-child.pid, sig);
+    } catch {
+      /* group already gone */
+    }
+  };
+  if (force) return signal('SIGKILL');
+  signal('SIGTERM');
+  setTimeout(() => signal('SIGKILL'), 5000).unref();
+}
 
 export const SAFE_TOOLS = [`mcp__${SERVER_NAME}`, 'Read', 'Glob', 'Grep', 'Write', 'Edit', 'WebSearch', 'WebFetch'];
 
@@ -53,10 +98,8 @@ export function processRunner({ dir, cwd, mcpUrl, command = null, model = null, 
       WWR_WORKSPACE: workspace ?? '',
     };
 
-    let child;
-    if (command) {
-      child = spawn(command, { cwd, env, shell: true, detached: !WINDOWS, stdio: ['pipe', 'pipe', 'pipe'] });
-    } else {
+    let target = { command };
+    if (!command) {
       const args = ['-p', '--mcp-config', mcpConfig, '--output-format', 'stream-json', '--verbose'];
       // The board, files and the web are always pre-approved, so no agent stalls on them.
       if (permissions === 'full') args.push('--dangerously-skip-permissions');
@@ -64,8 +107,9 @@ export function processRunner({ dir, cwd, mcpUrl, command = null, model = null, 
       if (model) args.push('--model', model);
       if (maxBudgetUsd > 0) args.push('--max-budget-usd', String(maxBudgetUsd));
       args.push(...extraArgs);
-      child = spawn('claude', args, { cwd, env, shell: WINDOWS, detached: !WINDOWS, stdio: ['pipe', 'pipe', 'pipe'] });
+      target = { file: 'claude', args };
     }
+    const child = spawnTree(target, { cwd, env });
 
     const log = fs.createWriteStream(path.join(logDir, `${agent.id}-${agent.name}.log`));
     let costUsd = 0;
@@ -104,22 +148,22 @@ export function processRunner({ dir, cwd, mcpUrl, command = null, model = null, 
         resolve({ code, costUsd, error: failed ? spawnError ?? (stderrTail.trim().split('\n').pop() || `exit code ${code}`) : undefined });
       };
       // A command that cannot be started emits "error" and may never emit "close".
-      child.on('error', (err) => finish(-1, err.code === 'ENOENT' ? `command not found: ${command ?? 'claude'}` : err.message));
+      child.on('error', (err) => finish(-1, err.code === 'ENOENT' ? `command not found: ${WINDOWS ? 'powershell.exe' : command ?? 'claude'}` : err.message));
+      // The agent is done: anything it left running in the background goes with it.
+      // (On Windows the job wrapper already did this.)
+      child.on('exit', () => !WINDOWS && killTree(child, { force: true }));
       child.on('close', (code) => finish(code, null));
     });
 
+    let killed = false;
     return {
       exited,
       // Kill the agent together with everything it started (shells, scripts),
       // otherwise a stopped run keeps computing — and spending — in the background.
       kill() {
-        if (child.exitCode !== null || !child.pid) return;
-        try {
-          if (WINDOWS) spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => child.kill());
-          else process.kill(-child.pid, 'SIGTERM');
-        } catch {
-          child.kill();
-        }
+        if (killed) return;
+        killed = true;
+        killTree(child);
       },
     };
   };

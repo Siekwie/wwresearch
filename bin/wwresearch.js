@@ -279,6 +279,7 @@ async function cmdRun(flags, positional) {
     if (o.error && o.error !== cmdRun.lastError) console.log(`\n  ${c.red('paused')} ${o.error}\n  ${c.dim(`Agent logs: ${path.relative(process.cwd(), path.join(dir, 'logs'))}`)}\n`);
     cmdRun.lastError = o.error;
   });
+  orchestrator.on('shutdown', ({ agents: n }) => console.log(`\n  ${c.yellow('Shut down from the board:')} ${n} agent${n === 1 ? '' : 's'} and everything they started were stopped. ${c.dim('Start them again in the UI, or press Ctrl+C to quit.')}\n`));
   orchestrator.on('idle', () => {
     const s = board.digest().counts;
     console.log(`\n  ${c.bold('All agents are done.')} ${s.ideas} approaches · ${s.verified} verified · ${s.derivations} partial results · ${s.deadEnds} dead ends`);

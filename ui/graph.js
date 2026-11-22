@@ -47,11 +47,13 @@ export function createGraph(root, { onSelect, onHover }) {
   const labelLayer = svgEl('g', {}, viewport);
 
   const nodes = new Map();
+  const edgeEls = new Map(); // key -> <line>, kept across updates
   let edges = [];
   let alpha = 0;
   let raf = null;
   let selected = null;
   let hovered = null;
+  let hoverTimer = null;
   let userMoved = false;
   const view = { x: 0, y: 0, k: 1 };
 
@@ -85,17 +87,22 @@ export function createGraph(root, { onSelect, onHover }) {
         n = { id, x: (a?.x ?? 0) + Math.cos(angle) * dist, y: (a?.y ?? 0) + Math.sin(angle) * dist, vx: 0, vy: 0, fixed: id === 'goal' };
         n.g = svgEl('g', { class: `g-node ${spec.type}` }, nodeLayer);
         n.g.dataset.id = id;
+        // A generous invisible hit area, so small bubbles don't drop the hover at their edge.
+        n.hit = svgEl('circle', { class: 'g-hit' }, n.g);
         n.shape = spec.type === 'finding' ? svgEl('rect', { x: -6, y: -6, width: 12, height: 12, rx: 3 }, n.g) : svgEl('circle', {}, n.g);
         n.inner = svgEl('text', {}, n.g);
         n.label = svgEl('text', { class: 'g-label' }, labelLayer);
         nodes.set(id, n);
         changed = true;
       }
+      if (n.r !== spec.r) {
+        if (spec.type !== 'finding') n.shape.setAttribute('r', spec.r);
+        n.hit.setAttribute('r', spec.r + 9);
+      }
       Object.assign(n, { type: spec.type, r: spec.r, charge: spec.charge });
-      if (spec.type !== 'finding') n.shape.setAttribute('r', spec.r);
-      if (spec.hue) n.shape.style.fill = spec.hue;
-      n.inner.textContent = spec.inner;
-      n.label.textContent = spec.label;
+      if (spec.hue && n.hue !== spec.hue) n.shape.style.fill = n.hue = spec.hue;
+      if (n.inner.textContent !== spec.inner) n.inner.textContent = spec.inner;
+      if (n.label.textContent !== spec.label) n.label.textContent = spec.label;
     }
     for (const [id, n] of nodes) {
       if (wanted.has(id)) continue;
@@ -104,17 +111,36 @@ export function createGraph(root, { onSelect, onHover }) {
       nodes.delete(id);
       changed = true;
     }
-    const valid = links.filter((l) => nodes.has(l.s) && nodes.has(l.t));
-    if (valid.length !== edges.length) changed = true;
-    edgeLayer.replaceChildren();
-    edges = valid.map((l) => {
-      const attrs = { class: `g-edge t-${l.type}` };
-      if (['builds', 'parent', 'contradicts'].includes(l.type)) attrs['marker-end'] = `url(#arrow-${l.type})`;
-      return { ...l, a: nodes.get(l.s), b: nodes.get(l.t), line: svgEl('line', attrs, edgeLayer) };
-    });
+    // Keyed edges: keep the existing <line> elements, only add and remove the difference.
+    const next = new Map();
+    for (const l of links) {
+      const key = `${l.type}:${l.s}>${l.t}`;
+      if (next.has(key) || !nodes.has(l.s) || !nodes.has(l.t)) continue;
+      let line = edgeEls.get(key);
+      if (!line) {
+        const attrs = { class: `g-edge t-${l.type}` };
+        if (['builds', 'parent', 'contradicts'].includes(l.type)) attrs['marker-end'] = `url(#arrow-${l.type})`;
+        line = svgEl('line', attrs, edgeLayer);
+        changed = true;
+      }
+      next.set(key, { ...l, a: nodes.get(l.s), b: nodes.get(l.t), line });
+    }
+    for (const [key, line] of edgeEls) {
+      if (next.has(key)) continue;
+      line.remove();
+      changed = true;
+    }
+    edgeEls.clear();
+    for (const [key, e] of next) edgeEls.set(key, e.line);
+    edges = [...next.values()];
+    if (hovered && !nodes.has(hovered)) hovered = null;
     applyFocus();
-    alpha = Math.max(alpha, changed ? 0.8 : 0.05);
-    start();
+    // Only a change in structure moves the layout. Status updates just recolour,
+    // so the map holds still while you read it.
+    if (changed) {
+      alpha = Math.max(alpha, 0.8);
+      start();
+    } else draw();
   }
 
   // ------------------------------------------------------------ simulation
@@ -156,7 +182,7 @@ export function createGraph(root, { onSelect, onHover }) {
       e.b.vy -= dy * f;
     }
     for (const n of list) {
-      if (n.fixed || n.dragging) {
+      if (n.fixed || n.dragging || n.id === hovered) {
         n.vx = n.vy = 0;
         continue;
       }
@@ -213,7 +239,8 @@ export function createGraph(root, { onSelect, onHover }) {
     raf = null;
     if (root.offsetParent === null) return; // hidden: resume on the next update
     step();
-    if (!userMoved) fit();
+    // Never pan or zoom under the pointer while something is hovered.
+    if (!userMoved && !hovered) fit();
     draw();
     if (alpha > 0.004) start();
   }
@@ -263,15 +290,22 @@ export function createGraph(root, { onSelect, onHover }) {
     }
     svg.setPointerCapture(ev.pointerId);
   });
+  function setHover(id, ev) {
+    clearTimeout(hoverTimer);
+    hoverTimer = null;
+    if (id !== hovered) {
+      hovered = id;
+      applyFocus();
+      if (!id) start(); // let the layout settle / re-fit again
+    }
+    onHover?.(id, ev);
+  }
   svg.addEventListener('pointermove', (ev) => {
     if (!drag) {
-      const g = ev.target.closest?.('.g-node');
-      const id = g?.dataset.id ?? null;
-      if (id !== hovered) {
-        hovered = id;
-        applyFocus();
-      }
-      onHover?.(id, ev);
+      const id = ev.target.closest?.('.g-node')?.dataset.id ?? null;
+      if (id) setHover(id, ev);
+      // Leaving a node: wait a moment, so brushing past a gap doesn't flash the whole map.
+      else if (hovered && !hoverTimer) hoverTimer = setTimeout(() => setHover(null), 160);
       return;
     }
     if (Math.hypot(ev.clientX - drag.start.x, ev.clientY - drag.start.y) > 4) drag.moved = true;
@@ -307,13 +341,7 @@ export function createGraph(root, { onSelect, onHover }) {
   };
   svg.addEventListener('pointerup', release);
   svg.addEventListener('pointercancel', release);
-  svg.addEventListener('pointerleave', () => {
-    if (hovered) {
-      hovered = null;
-      applyFocus();
-    }
-    onHover?.(null);
-  });
+  svg.addEventListener('pointerleave', () => setHover(null));
   svg.addEventListener(
     'wheel',
     (ev) => {

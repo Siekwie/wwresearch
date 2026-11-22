@@ -44,6 +44,8 @@ A card that ends in a proof or a partial result opens a *new* card (review or fo
 
 It needs no intelligence, so it has none: no model, no prompt, no way to be confused or persuaded. It counts live processes, compares with the target, and spawns. Its only heuristics are operational — agents that exit without ever calling the board count as failed launches; three in a row pause it with the reason on screen instead of burning the budget.
 
+Each agent is started as one stoppable unit with everything it launches — a Job Object on Windows (`src/jobwrap.ps1`), its own process group elsewhere — at below-normal priority. Whatever an agent leaves running when it exits dies with it, and **Shut down** (`POST /api/shutdown`) kills every unit at once and pauses the pool. Follow-up and review cards held at that moment reopen without using up a retry.
+
 Agents spawned for open cards are started even when the pool is full. Since the agent that opened the card is about to exit, the pool returns to the target on its own.
 
 ### Independence is structural

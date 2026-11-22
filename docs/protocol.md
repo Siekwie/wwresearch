@@ -99,7 +99,8 @@ When agents are docked by hand, identity is whatever the agent presents — the 
 | `GET /api/report.md` | Everything that was learned, as Markdown. |
 | `GET /api/events` | Server-sent events; a `change` event whenever the state changed. |
 | `GET /api/prompt?role=researcher\|card[&card=C-7]` | The docking prompt. |
-| `POST /api/orchestrator` | `{ target, paused, maxIdeas }` — the controls behind the UI. |
+| `POST /api/orchestrator` | `{ target, paused, maxIdeas }` — the controls behind the UI. `paused: false` starts agents again. |
+| `POST /api/shutdown` | Kill every running agent and everything it started, and stop spawning. The board stays up. |
 
 The server binds to `127.0.0.1` by default, rejects requests whose `Host` is not local, and rejects cross-origin writes. `--host 0.0.0.0` exposes it to your network — there is no authentication, so only do that on a network you trust.
 

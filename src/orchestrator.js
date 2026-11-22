@@ -43,23 +43,25 @@ export class Orchestrator extends EventEmitter {
       // Job 2 — the "prefabricated message": a card just opened and wants an agent.
       if (ev.type === 'card_opened') this.schedule();
       // The board released an agent (lease expired): make sure its process is gone too.
-      if (ev.type === 'agent_gone') this.live.get(ev.agentId)?.handle.kill();
+      if (ev.type === 'agent_gone') this.#kill(this.live.get(ev.agentId));
       // An agent closed its card: its work is done and its token is spent. Give the
       // process a moment to wind down, then free the slot instead of letting it idle.
       if (CLOSING.has(ev.type)) {
         const rec = this.live.get(ev.agentId);
         if (rec) {
-          rec.graceTimer = setTimeout(() => rec.handle.kill(), this.finishGraceMs);
+          rec.graceTimer = setTimeout(() => this.#kill(rec), this.finishGraceMs);
           rec.graceTimer.unref?.();
         }
       }
     };
     this.onSettings = () => this.schedule();
+    this.onShutdown = () => this.shutdown();
   }
 
   start() {
     this.board.on('event', this.onEvent);
     this.board.on('orchestrator', this.onSettings);
+    this.board.on('shutdown', this.onShutdown);
     this.schedule();
     return this;
   }
@@ -110,11 +112,11 @@ export class Orchestrator extends EventEmitter {
     } catch (err) {
       handle = { exited: Promise.resolve({ code: -1, error: err.message }), kill() {} };
     }
-    const rec = { agent, handle, timer: null };
+    const rec = { agent, handle, timer: null, killed: false };
     if (this.agentTimeoutMs > 0) {
       rec.timer = setTimeout(() => {
         board.agentGone(agent.id, `timed out after ${Math.round(this.agentTimeoutMs / 60000)} min`);
-        handle.kill();
+        this.#kill(rec);
       }, this.agentTimeoutMs);
       rec.timer.unref?.();
     }
@@ -142,9 +144,10 @@ export class Orchestrator extends EventEmitter {
     // the budget retrying blindly: back off, and stop after three in a row.
     const neverShowedUp = agent.calls === 0;
     let delay = 0;
-    if (neverShowedUp && !this.stopped) {
+    if (neverShowedUp && agent.role === 'researcher') patch.ideasSpawned = Math.max(0, o.ideasSpawned - 1);
+    // An agent we killed ourselves did not fail to launch.
+    if (neverShowedUp && !this.stopped && !rec.killed) {
       this.launchFailures++;
-      if (agent.role === 'researcher') patch.ideasSpawned = Math.max(0, o.ideasSpawned - 1);
       delay = this.retryDelayMs * this.launchFailures;
       if (this.launchFailures >= 3) {
         patch.paused = true;
@@ -161,16 +164,37 @@ export class Orchestrator extends EventEmitter {
     this.schedule(delay);
   }
 
-  /** Stop spawning and terminate every live agent. */
+  #kill(rec) {
+    if (!rec || rec.killed) return;
+    rec.killed = true;
+    clearTimeout(rec.timer);
+    clearTimeout(rec.graceTimer);
+    rec.handle.kill();
+  }
+
+  /**
+   * The Shut down button: stop spawning and kill every live agent together with
+   * everything it started. The board stays up; resuming starts fresh agents, and
+   * the cards they held reopen without counting as a retry.
+   */
+  shutdown(reason = 'shut down from the board') {
+    this.board.setOrchestrator({ paused: true, error: null });
+    const recs = [...this.live.values()];
+    for (const rec of recs) {
+      this.board.agentGone(rec.agent.id, reason, { restart: true });
+      this.#kill(rec);
+    }
+    this.emit('shutdown', { agents: recs.length });
+    return recs.length;
+  }
+
+  /** Stop spawning and terminate every live agent (the board process is exiting). */
   stop() {
     this.stopped = true;
     clearTimeout(this.pending);
     this.board.off('event', this.onEvent);
     this.board.off('orchestrator', this.onSettings);
-    for (const rec of this.live.values()) {
-      clearTimeout(rec.timer);
-      clearTimeout(rec.graceTimer);
-      rec.handle.kill();
-    }
+    this.board.off('shutdown', this.onShutdown);
+    for (const rec of this.live.values()) this.#kill(rec);
   }
 }

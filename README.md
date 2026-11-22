@@ -210,6 +210,9 @@ It means an independent agent tried to break it and could not. That is a much st
 **What happens when an agent crashes?**
 Its card is reopened and a fresh agent takes it over, with the notes, findings and files the first one left. The same happens to every running card when you stop and restart the board. If agents fail to start at all (not logged in, command missing), the orchestrator pauses instead of burning through the budget, and tells you why.
 
+**What if I leave it running overnight?**
+Every agent runs at below-normal CPU priority together with everything it starts, so the desktop stays usable. When an agent exits, is timed out or is released, the background jobs it started (`nohup ./search &` and the like) are killed with it — on Windows through a Job Object, elsewhere through its process group. **Shut down** in the UI kills every running agent and all of its processes at once; the board stays readable, and **Start again** picks up where it left off.
+
 **Only for mathematics?**
 No. "Proof" means "evidence that the goal is met": a proof, a reproducing script, a benchmark result, a counterexample. The demo uses √2 because everyone can check it.
 

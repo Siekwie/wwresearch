@@ -172,6 +172,18 @@ test('the UI and the event stream are served', async () => {
   assert.equal(o.paused, true);
 });
 
+test('the shut down button pauses the board and tells the orchestrator', async () => {
+  board.setOrchestrator({ paused: false });
+  let heard = 0;
+  const listener = () => heard++;
+  board.on('shutdown', listener);
+  const res = await fetch(`${base}/api/shutdown`, { method: 'POST' });
+  board.off('shutdown', listener);
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).orchestrator.paused, true);
+  assert.equal(heard, 1);
+});
+
 test('requests from other sites and rebinding hosts are refused', async () => {
   const port = new URL(base).port;
   const status = (headers, method = 'GET', path = '/api/state') =>

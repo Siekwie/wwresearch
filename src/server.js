@@ -132,6 +132,13 @@ export function createServer({ board, mcp, host = '127.0.0.1', port = 4777 }) {
       const card = cardId ? board.state.cards[cardId.toUpperCase()] : null;
       return send(res, 200, role === 'researcher' ? researcherPrompt({ goal }) : cardPrompt({ goal, cardId: card?.id, kind: card?.kind ?? 'followup' }));
     }
+    if (p === '/api/shutdown' && req.method === 'POST') {
+      // Kill every running agent and everything it started; the orchestrator listens.
+      const live = board.state.orchestrator.live;
+      board.setOrchestrator({ paused: true, error: null });
+      board.emit('shutdown');
+      return send(res, 200, { ok: true, stopped: live, orchestrator: board.state.orchestrator });
+    }
     if (p === '/api/orchestrator' && req.method === 'POST') {
       const body = await readJson(req);
       const patch = {};
