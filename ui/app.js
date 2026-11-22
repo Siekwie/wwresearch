@@ -609,7 +609,7 @@ document.addEventListener('click', (ev) => {
     else if (act === 'fewer') setOrchestrator({ target: Math.max(0, o.target - 1) });
     else if (act === 'shutdown') {
       const n = o.live;
-      const msg = `Shut down ${plural(n, 'agent')} now?\n\nEvery running agent and everything it started (shells, scripts, background computations) is killed immediately. Unfinished work on their cards is lost; follow-up and review cards are handed to fresh agents when you start again.`;
+      const msg = `Shut down ${plural(n, 'agent')} now?\n\nEvery running agent and everything it started (shells, scripts, background computations) is killed immediately. Their cards keep their notes and files and are handed to fresh agents when you start again.`;
       if (n && !confirm(msg)) return;
       fetch('/api/shutdown', { method: 'POST' });
     }
