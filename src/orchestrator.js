@@ -20,14 +20,16 @@ export class Orchestrator extends EventEmitter {
    * @param {number} [opts.maxIdeas]       stop sending new researchers after this many (0 = unlimited)
    * @param {boolean} [opts.lenses]        give each researcher a different thinking nudge
    * @param {number} [opts.agentTimeoutMs] kill agents that run longer than this (0 = never)
+   * @param {number} [opts.heartbeatMs]    pass agent output on to the board at most this often
    * @param {(agent: object) => string|null} [opts.workspaceFor]
    */
-  constructor({ board, spawnAgent, target, maxIdeas = 0, lenses = true, agentTimeoutMs = 0, workspaceFor = () => null, retryDelayMs = 2000, finishGraceMs = 30_000, notes = [] }) {
+  constructor({ board, spawnAgent, target, maxIdeas = 0, lenses = true, agentTimeoutMs = 0, heartbeatMs = 60_000, workspaceFor = () => null, retryDelayMs = 2000, finishGraceMs = 30_000, notes = [] }) {
     super();
     this.board = board;
     this.spawnAgent = spawnAgent;
     this.lenses = lenses;
     this.agentTimeoutMs = agentTimeoutMs;
+    this.heartbeatMs = heartbeatMs;
     this.workspaceFor = workspaceFor;
     this.notes = notes; // facts about the machine and permissions, shown to every agent
     this.retryDelayMs = retryDelayMs;
@@ -106,9 +108,19 @@ export class Orchestrator extends EventEmitter {
         ? researcherPrompt({ goal, token: agent.token, lens: this.lenses ? pickLens(this.lensOffset + o.ideasSpawned) : null, workspace, notes })
         : cardPrompt({ goal, token: agent.token, kind: card.kind, workspace, notes });
 
+    // Output from the agent's process keeps its card's lease alive, so an agent
+    // that waits hours on a search is not released for "no activity".
+    let lastBeat = 0;
+    const onActivity = () => {
+      const now = Date.now();
+      if (now - lastBeat < this.heartbeatMs) return;
+      lastBeat = now;
+      board.heartbeat(agent.id);
+    };
+
     let handle;
     try {
-      handle = this.spawnAgent({ agent, role, card, prompt, workspace });
+      handle = this.spawnAgent({ agent, role, card, prompt, workspace, onActivity });
     } catch (err) {
       handle = { exited: Promise.resolve({ code: -1, error: err.message }), kill() {} };
     }

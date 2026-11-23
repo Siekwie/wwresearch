@@ -296,6 +296,27 @@ test('cards without activity are released after the lease', () => {
   assert.throws(() => board.note({ token, text: 'too late' }), { code: 'gone' });
 });
 
+test('a heartbeat from the agent process keeps the lease, but does not count as showing up', () => {
+  const { board, advance } = setup({ cardLeaseMinutes: 10 });
+  const { agent, token, card } = claim(board, ...PARITY);
+  const calls = agent.calls;
+  for (let i = 0; i < 6; i++) {
+    advance(9 * 60_000); // a long search: no board call for almost an hour
+    assert.equal(board.heartbeat(agent.id), true);
+    board.tick();
+  }
+  assert.equal(board.state.cards[card.id].status, 'active');
+  assert.equal(agent.calls, calls, 'heartbeats are not board calls');
+  board.note({ token, text: 'The search finished.' });
+
+  // once the process goes quiet, the lease runs out as before
+  advance(11 * 60_000);
+  board.tick();
+  assert.equal(board.state.cards[card.id].status, 'open');
+  assert.equal(board.heartbeat(agent.id), false, 'a released agent cannot revive its card');
+  assert.equal(board.state.cards[card.id].status, 'open');
+});
+
 test('reserved cards cannot be taken by someone else', () => {
   const { board } = setup();
   const author = claim(board, ...PARITY);

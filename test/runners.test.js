@@ -59,6 +59,18 @@ test('background processes an agent leaves behind die when it exits', { timeout:
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('output from the agent process is reported as activity', { timeout: 40000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wwr-runner-'));
+  const script = path.join(dir, 'talk.cjs');
+  fs.writeFileSync(script, "let n = 0; const t = setInterval(() => { console.log('tick ' + n); if (++n === 3) clearInterval(t); }, 50);");
+  const spawnAgent = processRunner({ dir, cwd: dir, mcpUrl: 'http://127.0.0.1:1/mcp', command: `"${process.execPath}" "${script}"` });
+  let beats = 0;
+  const handle = spawnAgent({ agent: { id: 'A-1', name: 'talk', token: 'wwr_x' }, role: 'researcher', card: null, prompt: 'hi', workspace: path.join(dir, 'ws'), onActivity: () => beats++ });
+  await handle.exited;
+  assert.ok(beats >= 1, 'printing something counts as being alive');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('killing an agent kills everything it started', { timeout: 40000 }, async () => {
   const { dir, handle, pid } = setup(true);
   const bg = await pid();

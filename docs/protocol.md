@@ -106,4 +106,4 @@ The server binds to `127.0.0.1` by default, rejects requests whose `Host` is not
 
 ## Tunables
 
-Defaults live in `DEFAULT_CONFIG` in `src/board.js`: `turnSeconds` 180, `queueIdleSeconds` 180, `pollSeconds` 50, `cardLeaseMinutes` 60, `maxDepth` 6, `maxReopens` 2, `similarFlag` 0.28, `similarGate` 0.5.
+Defaults live in `DEFAULT_CONFIG` in `src/board.js`: `turnSeconds` 180, `queueIdleSeconds` 180, `pollSeconds` 50, `cardLeaseMinutes` 60 (renewed by any board call and, for agents the orchestrator started, by any output of the agent's process), `maxDepth` 6, `maxReopens` 2, `similarFlag` 0.28, `similarGate` 0.5.

@@ -140,7 +140,7 @@ Write the goal like you would brief a capable colleague: the exact statement, wh
 | `--permissions MODE` | What agents may do: `auto` (default), `full` or `safe` — see below. |
 | `--allow TOOL` | Pre-approve an extra tool, repeatable: `--allow "Bash(python3:*)"`. |
 | `--max-budget-usd X` | Spending cap per agent. |
-| `--agent-timeout MIN` | Kill agents that run longer than this (default 120). |
+| `--agent-timeout MIN` | Kill agents that run longer than this in total (default 480, `0` = never). Agents that go silent are released after an hour anyway. |
 | `--agent-cmd CMD` | Use your own agent command instead of Claude Code. |
 | `--fresh` | Archive the existing board in this directory and start over. |
 
@@ -211,7 +211,7 @@ It means an independent agent tried to break it and could not. That is a much st
 Its card is reopened and a fresh agent takes it over, with the notes, findings and files the first one left. The same happens to every running card when you stop and restart the board. If agents fail to start at all (not logged in, command missing), the orchestrator pauses instead of burning through the budget, and tells you why.
 
 **What if I leave it running overnight?**
-Every agent runs at below-normal CPU priority together with everything it starts, so the desktop stays usable. When an agent exits, is timed out or is released, the background jobs it started (`nohup ./search &` and the like) are killed with it — on Windows through a Job Object, elsewhere through its process group. **Shut down** in the UI kills every running agent and all of its processes at once; the board stays readable, and **Start again** picks up where it left off.
+Every agent runs at below-normal CPU priority together with everything it starts, so the desktop stays usable. Long searches are fine: an agent counts as active as long as its process prints anything (Claude Code prints a heartbeat every 30 s while a shell command runs), not only when it calls the board. An agent is released only after an hour with neither, or after `--agent-timeout` in total. When an agent exits, is timed out or is released, the background jobs it started (`nohup ./search &` and the like) are killed with it — on Windows through a Job Object, elsewhere through its process group. **Shut down** in the UI kills every running agent and all of its processes at once; the board stays readable, and **Start again** picks up where it left off.
 
 **Only for mathematics?**
 No. "Proof" means "evidence that the goal is met": a proof, a reproducing script, a benchmark result, a counterexample. The demo uses √2 because everyone can check it.

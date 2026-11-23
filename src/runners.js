@@ -81,7 +81,7 @@ export function processRunner({ dir, cwd, mcpUrl, command = null, model = null, 
   const mcpConfig = path.join(dir, 'mcp.json');
   fs.writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { [SERVER_NAME]: { type: 'http', url: mcpUrl } } }, null, 2));
 
-  return function spawnAgent({ agent, role, card, prompt, workspace }) {
+  return function spawnAgent({ agent, role, card, prompt, workspace, onActivity = () => {} }) {
     const promptFile = path.join(promptDir, `${agent.id}.md`);
     fs.writeFileSync(promptFile, prompt);
     if (workspace) fs.mkdirSync(workspace, { recursive: true });
@@ -117,6 +117,10 @@ export function processRunner({ dir, cwd, mcpUrl, command = null, model = null, 
     let stderrTail = '';
     child.stdout.on('data', (chunk) => {
       log.write(chunk);
+      // Any output means the process is alive. Claude Code prints a heartbeat
+      // every 30 s while a long shell command runs, so this also covers an agent
+      // that is waiting on a search.
+      onActivity();
       // Claude Code's stream-json ends with a "result" line that carries the cost.
       buffer += chunk.toString('utf8');
       const lines = buffer.split('\n');
@@ -133,6 +137,7 @@ export function processRunner({ dir, cwd, mcpUrl, command = null, model = null, 
     });
     child.stderr.on('data', (chunk) => {
       log.write(chunk);
+      onActivity();
       stderrTail = (stderrTail + chunk.toString('utf8')).slice(-400);
     });
     child.stdin.on('error', () => {});

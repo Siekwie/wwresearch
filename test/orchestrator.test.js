@@ -127,6 +127,34 @@ test('an agent that closed its card but keeps running is stopped after a grace p
   orch.stop();
 });
 
+test('output from an agent busy with a long run keeps its card; a silent agent is released and killed', async () => {
+  let t = 1_000_000;
+  const board = new Board({ goal: 'Find a proof of the statement.', config: { cardLeaseMinutes: 60 }, now: () => t });
+  const { spawned, spawnAgent } = manualRunner();
+  const orch = new Orchestrator({ board, spawnAgent, target: 1, maxIdeas: 1, heartbeatMs: 0 }).start();
+  await until(() => spawned.length === 1);
+  const a = spawned[0];
+  board.joinQueue({ token: a.agent.token, idea: 'A first idea for the statement.' });
+  board.peekTurn(a.agent.token);
+  board.claimCard({ token: a.agent.token, title: 'First idea', approach: 'Try the first idea carefully and in detail.' });
+
+  // three hours of waiting on a search, printing a heartbeat now and then
+  for (let i = 0; i < 6; i++) {
+    t += 30 * 60_000;
+    a.onActivity();
+    board.tick();
+  }
+  assert.equal(board.state.cards['C-1'].status, 'active');
+  assert.equal(a.killed, false);
+
+  // then the process goes quiet: the lease runs out and the process is stopped
+  t += 61 * 60_000;
+  board.tick();
+  await until(() => a.killed);
+  assert.equal(board.state.cards['C-1'].status, 'open');
+  orch.stop();
+});
+
 test('stopping the orchestrator leaves cards in place for the next start', async () => {
   const board = new Board({ goal: 'Find a proof of the statement.' });
   const { spawned, spawnAgent } = manualRunner();

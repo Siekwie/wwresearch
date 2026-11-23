@@ -39,7 +39,7 @@ Options for run
       --allow TOOL        Pre-approve an extra tool, repeatable, e.g. --allow "Bash(python3:*)"
       --agent-cmd CMD     Use your own agent command instead of Claude Code. It gets the prompt on
                           stdin and WWR_MCP_URL, WWR_AGENT_TOKEN, WWR_PROMPT_FILE … in its environment
-      --agent-timeout MIN Kill agents that run longer than MIN minutes (default 120, 0 = never)
+      --agent-timeout MIN Kill agents that run longer than MIN minutes (default 480, 0 = never)
       --max-budget-usd X  Spending cap per agent, passed to Claude Code
       --no-lenses         Do not give researchers individual thinking nudges
       --fresh             Archive an existing board in this directory and start over
@@ -226,7 +226,7 @@ async function cmdRun(flags, positional) {
   const { srv, url, mcpUrl } = await listen(board, mcp, flags);
   const agents = number(flags.agents, 'agents', 4);
   const maxIdeas = number(flags.maxIdeas, 'max-ideas', 24);
-  const timeoutMin = number(flags.agentTimeout, 'agent-timeout', 120);
+  const timeoutMin = number(flags.agentTimeout, 'agent-timeout', 480);
   const permissions = flags.yolo ? 'full' : (flags.permissions ?? 'auto');
   if (!['auto', 'full', 'safe'].includes(permissions)) die('--permissions must be auto, full or safe');
   const cwd = process.cwd();
@@ -241,6 +241,9 @@ async function cmdRun(flags, positional) {
     );
   }
   if (process.platform === 'win32') notes.push('This machine runs Windows and your shell is Git Bash. If `python3` is missing or opens the Microsoft Store, use `python` or `py` instead.');
+  notes.push(
+    `Long computations are fine: you are only stopped ${timeoutMin > 0 ? `after ${timeoutMin >= 120 ? `${Math.round(timeoutMin / 60)} hours` : `${timeoutMin} minutes`} in total, or ` : ''}when neither you nor your process has shown any sign of life for ${board.config.cardLeaseMinutes} minutes (waiting on a shell command counts as alive). When you are stopped, everything you started stops too, so write checkpoints and note on the card how to resume a long run.`,
+  );
   notes.push(`The working directory ${cwd} is shared with other agents. Do not modify or delete files you did not create, and change nothing outside it.`);
 
   const spawnAgent = processRunner({

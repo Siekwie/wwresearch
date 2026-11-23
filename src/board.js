@@ -14,7 +14,7 @@ export const DEFAULT_CONFIG = {
   turnSeconds: 180, // how long the agent at the head may hold the board
   queueIdleSeconds: 180, // waiting agents that stop polling are dropped
   pollSeconds: 50, // long-poll duration of wait_turn
-  cardLeaseMinutes: 60, // active cards without any activity are released
+  cardLeaseMinutes: 60, // active cards with no board call and no agent output for this long are released
   maxDepth: 6, // longest chain of follow-up cards
   maxReopens: 2, // how often a card whose agent vanished is handed to a fresh agent
   similarFlag: 0.28, // "looks related" threshold (hint only)
@@ -227,6 +227,22 @@ export class Board extends EventEmitter {
     this.tokens.set(agent.token, id);
     this.#dirty();
     return agent;
+  }
+
+  /**
+   * The agent's process is visibly alive (it produced output). An agent that is
+   * waiting on a long computation does not call the board for hours; this keeps
+   * its card's lease from running out while the process is still at work. It is
+   * not an authenticated call, so it does not count as the agent showing up.
+   */
+  heartbeat(agentId) {
+    const agent = this.state.agents[agentId];
+    if (!agent || agent.state === 'finished' || agent.state === 'gone') return false;
+    const now = this.now();
+    agent.lastSeenAt = now;
+    const card = this.state.cards[agent.cardId];
+    if (card && card.agentId === agentId && card.status === 'active') card.lastActivityAt = now;
+    return true;
   }
 
   /**
