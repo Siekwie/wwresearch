@@ -380,3 +380,70 @@ test('the snapshot for the UI never contains agent tokens', () => {
   assert.equal(JSON.stringify(board.snapshot()).includes(token), false);
   assert.equal(JSON.stringify(board.snapshot()).includes('wwr_'), false);
 });
+
+/** Submit a proof and have a fresh agent verify it. Returns the proof card and the check card it opened. */
+function verifiedProof(board, title = PARITY[0], approach = PARITY[1]) {
+  const author = claim(board, title, approach);
+  const { card, review } = board.submitProof({ token: author.token, ...PROOF });
+  const reviewer = board.enterCard({ card_id: review.id });
+  const { check } = board.submitReview({ token: reviewer.agent.token, verdict: 'verified', ...REVIEW });
+  return { card, check };
+}
+
+test('a verified proof opens a result check; refuted ones do not, and one waiting check is enough', () => {
+  const { board } = setup();
+  const bad = claim(board, 'Decimal expansion', 'Look at the decimal digits of the root and find that they never repeat.');
+  const { review } = board.submitProof({ token: bad.token, ...PROOF });
+  const r = board.enterCard({ card_id: review.id });
+  assert.equal(board.submitReview({ token: r.agent.token, verdict: 'refuted', flaws: 'Only finitely many digits were checked.', ...REVIEW }).check, null);
+
+  const first = verifiedProof(board);
+  assert.equal(first.check.kind, 'check');
+  assert.equal(first.check.status, 'open');
+  assert.equal(first.check.triggeredBy, first.card.id);
+  const second = verifiedProof(board, 'Infinite descent', 'Build a smaller solution from any solution of p squared equals two q squared.');
+  assert.equal(second.check, null, 'the waiting check will see this proof too');
+  assert.equal(board.digest().cards.some((c) => c.id === first.check.id), false, 'check cards are not research ideas');
+
+  const checker = board.enterCard({ card_id: first.check.id });
+  assert.equal(checker.agent.role, 'checker');
+  assert.deepEqual(checker.briefing.verified.map((p) => p.id).sort(), [first.card.id, second.card.id].sort());
+  assert.equal(checker.briefing.unsettled.length, 1, 'the refuted proof is listed as not established');
+  assert.throws(() => board.submitProof({ token: checker.agent.token, ...PROOF }), { code: 'wrong_card' });
+});
+
+test('a checker writes the result; "not finished" needs what is missing and researchers see it', () => {
+  const { board } = setup();
+  const { check } = verifiedProof(board);
+  const checker = board.enterCard({ card_id: check.id });
+  const summary = '- C-1 proves the claim for even numerators only.';
+  assert.throws(() => board.submitResult({ token: checker.agent.token, finished: false, summary }), { code: 'invalid' });
+  assert.throws(() => board.submitResult({ token: checker.agent.token, finished: 'yes', summary }), { code: 'invalid' });
+  board.submitResult({ token: checker.agent.token, finished: false, summary, missing: 'The case of an odd numerator is not covered.' });
+  assert.equal(board.state.project.finished, null);
+  assert.equal(board.state.project.result.cardId, check.id);
+  assert.equal(board.state.cards[check.id].status, 'reported');
+  assert.match(board.digest().result.missing, /odd numerator/);
+  assert.throws(() => board.note({ token: checker.agent.token, text: 'one more thing' }), { code: 'finished' });
+});
+
+test('finished=true marks the goal as reached; no more checks open; the user can override both ways', () => {
+  const { board } = setup();
+  const seen = [];
+  board.on('event', (ev) => seen.push(ev.type));
+  const { check } = verifiedProof(board);
+  const checker = board.enterCard({ card_id: check.id });
+  board.submitResult({ token: checker.agent.token, finished: true, summary: '- C-1: the root of two is irrational (verified).', based_on: ['C-1'] });
+  assert.deepEqual(board.state.project.finished, { at: board.now(), by: 'agent', cardId: check.id });
+  assert.ok(seen.includes('goal_finished'));
+  assert.equal(verifiedProof(board, 'Infinite descent', 'Build a smaller solution from any solution of p squared equals two q squared.').check, null);
+
+  board.setFinished(false);
+  assert.equal(board.state.project.finished, null);
+  assert.ok(seen.includes('goal_reopened'));
+  board.setFinished(true, { by: 'user' });
+  assert.equal(board.state.project.finished.by, 'user');
+  const n = seen.length;
+  board.setFinished(true);
+  assert.equal(seen.length, n, 'marking it twice changes nothing');
+});

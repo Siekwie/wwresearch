@@ -103,9 +103,15 @@ test('job 2: proof and follow-up cards get an agent directly, without the queue'
   let idle = false;
   orch.on('idle', () => (idle = true));
   spawned[3].exit({ code: 0 });
+  // the verified proof gets a result checker, also directly
+  await until(() => spawned.length === 5);
+  assert.equal(spawned[4].role, 'checker');
+  board.enterCard({ token: spawned[4].agent.token });
+  board.submitResult({ token: spawned[4].agent.token, finished: false, summary: '- The statement is proven for the base case only.', missing: 'The general case is still open.' });
+  spawned[4].exit({ code: 0 });
   await until(() => idle);
   assert.equal(board.state.cards[card.id].proofStatus, 'verified');
-  assert.equal(spawned.length, 4, 'the idea budget is respected');
+  assert.equal(spawned.length, 5, 'the idea budget is respected');
   orch.stop();
 });
 
@@ -188,11 +194,44 @@ test('agents that never reach the board pause the orchestrator instead of burnin
   orch.stop();
 });
 
+test('a verified proof gets a checker; when it finds the goal reached every agent is stopped', async () => {
+  const board = new Board({ goal: 'Find a proof of the statement.' });
+  const { spawned, spawnAgent } = manualRunner();
+  const orch = new Orchestrator({ board, spawnAgent, target: 2, retryDelayMs: 1 }).start();
+  await until(() => spawned.length === 2);
+  const [author, other] = spawned;
+  board.joinQueue({ token: author.agent.token, idea: 'A first idea for the statement.' });
+  board.peekTurn(author.agent.token);
+  board.claimCard({ token: author.agent.token, title: 'First idea', approach: 'Try the first idea carefully and in detail.' });
+  board.submitProof({ token: author.agent.token, ...PROOF });
+  author.exit({ code: 0 });
+  await until(() => spawned.some((s) => s.role === 'reviewer'));
+  const reviewer = spawned.find((s) => s.role === 'reviewer');
+  board.enterCard({ token: reviewer.agent.token });
+  board.submitReview({ token: reviewer.agent.token, verdict: 'verified', what_was_found: 'A complete proof of the statement.', assessment: 'Every step holds and was re-derived.', independent_test: 'Check all cases by brute force.', why_independent: 'Brute force shares no reasoning with the proof.' });
+  reviewer.exit({ code: 0 });
+  await until(() => spawned.some((s) => s.role === 'checker'));
+  const checker = spawned.find((s) => s.role === 'checker');
+  assert.match(checker.prompt, /result checker/);
+  board.enterCard({ token: checker.agent.token });
+
+  let reason = null;
+  orch.on('shutdown', (e) => (reason = e.reason));
+  board.submitResult({ token: checker.agent.token, finished: true, summary: '- C-1 proves the statement (verified).' });
+  assert.equal(reason, 'the goal is reached');
+  assert.equal(board.state.orchestrator.paused, true);
+  assert.ok(other.killed && checker.killed, 'every live agent was stopped');
+  const count = spawned.length;
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(spawned.length, count, 'nothing new is spawned');
+  orch.stop();
+});
+
 test('the demo swarm runs to completion against the real server', async () => {
   const board = new Board({ goal: DEMO_GOAL, demo: true });
   const srv = createServer({ board, mcp: createMcp(board), port: 0 });
   const { url } = await srv.listen();
-  const orch = new Orchestrator({ board, spawnAgent: simRunner({ apiUrl: url, speed: 400 }), target: 5, maxIdeas: DEMO_IDEAS, lenses: false });
+  const orch = new Orchestrator({ board, spawnAgent: simRunner({ apiUrl: url, speed: 400 }), target: 5, maxIdeas: DEMO_IDEAS, lenses: false, stopWhenFinished: false });
   const idle = new Promise((r) => orch.on('idle', r));
   orch.start();
   await idle;
@@ -208,6 +247,10 @@ test('the demo swarm runs to completion against the real server', async () => {
   assert.equal(cards.filter((c) => c.proofStatus === 'refuted').length, 1);
   assert.equal(cards.filter((c) => c.status === 'dead_end').length, 4);
   assert.equal(cards.filter((c) => ['active', 'open'].includes(c.status)).length, 0);
+  // the first verified proof opened a result check, whose agent found the goal reached
+  assert.equal(board.state.project.finished?.by, 'agent');
+  assert.equal(board.state.cards[board.state.project.finished.cardId].kind, 'check');
+  assert.match(board.state.project.result.summary, /verified/);
   // nobody reviewed their own work
   for (const r of cards.filter((c) => c.kind === 'review')) assert.notEqual(r.agentId, board.state.cards[r.parentId].agentId);
   // one agent, one card

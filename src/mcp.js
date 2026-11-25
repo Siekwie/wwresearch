@@ -234,6 +234,23 @@ export function createTools(board) {
     },
   );
 
+  add(
+    'submit_result',
+    'Result checkers only. Close your check card with the current state of the goal: is it reached, what is established, what is still missing. It is written to result.md for the user. finished=true stops every agent. After this call you are done.',
+    {
+      token: TOKEN,
+      finished: { type: 'boolean', description: 'true only if the goal as stated is fully reached by what is established.' },
+      summary: { type: 'string', description: 'What is established so far, as Markdown bullet points naming card ids. Written for the human user.' },
+      missing: { type: 'string', description: 'What is still needed to reach the goal. Required when finished is false.' },
+      based_on: IDS('Ids of the cards/findings your verdict rests on.'),
+    },
+    ['token', 'finished', 'summary'],
+    async (args) => {
+      const { card, finished } = board.submitResult(args);
+      return { text: `Result recorded on ${card.id}: ${finished ? 'the goal is reached. Every agent is being stopped.' : 'not finished yet.'} You are done — stop now.`, data: { cardId: card.id, finished } };
+    },
+  );
+
   return tools;
 }
 
@@ -270,7 +287,7 @@ export function createMcp(board, { version = '0.0.0' } = {}) {
   ];
 
   const instructions =
-    'Shared research board for parallel agents. New idea: join_queue → wait_turn → claim_card → work (note, add_finding) → finish with submit_proof | submit_derivation | report_dead_end. Sent into an existing card: enter_card → work → finish (reviewers: submit_review). One agent, one card.';
+    'Shared research board for parallel agents. New idea: join_queue → wait_turn → claim_card → work (note, add_finding) → finish with submit_proof | submit_derivation | report_dead_end. Sent into an existing card: enter_card → work → finish (reviewers: submit_review, result checkers: submit_result). One agent, one card.';
 
   async function dispatch(msg, ctx) {
     const { method, params = {} } = msg;

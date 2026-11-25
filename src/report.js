@@ -44,14 +44,52 @@ export function reviewReport(board, reviewCardId) {
   ].join('\n');
 }
 
+const when = (t) => new Date(t).toISOString().slice(0, 16).replace('T', ' ');
+
+/**
+ * result.md: where the goal stands. The last checker's summary, plus the
+ * verified proofs and partial results straight from the board, so the file is
+ * useful even before any checker ran.
+ */
+export function resultReport(board) {
+  const s = board.state;
+  const p = s.project;
+  const r = p.result;
+  const f = p.finished;
+  const work = Object.values(s.cards).filter((c) => c.kind === 'idea' || c.kind === 'followup');
+  let status;
+  if (f?.by === 'user') status = `**Finished** — marked as finished by you (${when(f.at)} UTC).`;
+  else if (f) status = `**Finished** — the result checker on ${f.cardId} found the goal reached (${when(f.at)} UTC).`;
+  else if (r?.finished) status = `**Not finished** — you marked the goal as not finished again, although the result checker on ${r.cardId} had found it reached (${when(r.at)} UTC).`;
+  else if (r) status = `**Not finished yet** — last checked on ${r.cardId} (${when(r.at)} UTC).`;
+  else status = '**Not finished yet** — no result checker has run so far (one runs after every verified proof).';
+
+  const out = [`# Result: ${p.title}`, '', status, ''];
+  if (r) {
+    out.push('## Summary', '', r.summary, '');
+    if (r.missing && !f) out.push('## Still missing', '', r.missing, '');
+    else if (r.missing) out.push('## What the checker said was still missing', '', r.missing, '');
+  }
+  const verified = work.filter((c) => c.status === 'proof' && c.proofStatus === 'verified');
+  const partial = work.filter((c) => c.status === 'derivation');
+  if (verified.length) out.push('## Verified proofs', '', ...verified.map((c) => `- **${c.id}** ${c.outcome.claim} (report: \`.wwresearch/reports/${c.id}-verified.md\`)`), '');
+  if (partial.length) out.push('## Partial results', '', ...partial.map((c) => `- **${c.id}** ${c.outcome.established}`), '');
+  out.push('## Goal', '', p.goal, '');
+  return out.join('\n');
+}
+
 /** Everything the swarm learned, as one Markdown document. */
 export function fullReport(board) {
   const s = board.state;
   const cards = Object.values(s.cards);
-  const work = cards.filter((c) => c.kind !== 'review');
+  const work = cards.filter((c) => c.kind === 'idea' || c.kind === 'followup');
   const reviewOf = (c) => c.childIds.map((id) => s.cards[id]).find((r) => r.kind === 'review' && r.status === 'reviewed');
   const by = (fn) => work.filter(fn);
   const out = [`# Research report: ${s.project.title}`, '', '## Goal', '', s.project.goal, ''];
+  if (s.project.finished || s.project.result) {
+    out.push('## Where the goal stands', '', s.project.finished ? '**Finished.**' : '**Not finished yet.**', '');
+    if (s.project.result) out.push(s.project.result.summary, '', ...(s.project.result.missing && !s.project.finished ? ['*Still missing:* ' + s.project.result.missing, ''] : []));
+  }
 
   const proofs = by((c) => c.status === 'proof');
   out.push(

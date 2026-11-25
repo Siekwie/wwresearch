@@ -54,7 +54,7 @@ test('MCP lists well-formed tools and prompts', async () => {
   const { tools } = await rpc('tools/list');
   assert.deepEqual(
     tools.map((t) => t.name),
-    ['join_queue', 'wait_turn', 'claim_card', 'pass_turn', 'enter_card', 'note', 'add_finding', 'search_knowledge', 'read_card', 'submit_proof', 'submit_derivation', 'report_dead_end', 'submit_review'],
+    ['join_queue', 'wait_turn', 'claim_card', 'pass_turn', 'enter_card', 'note', 'add_finding', 'search_knowledge', 'read_card', 'submit_proof', 'submit_derivation', 'report_dead_end', 'submit_review', 'submit_result'],
   );
   for (const t of tools) {
     assert.equal(t.inputSchema.type, 'object');
@@ -182,6 +182,18 @@ test('the shut down button pauses the board and tells the orchestrator', async (
   assert.equal(res.status, 200);
   assert.equal((await res.json()).orchestrator.paused, true);
   assert.equal(heard, 1);
+});
+
+test('the Finished button marks the goal and result.md reflects it', async () => {
+  let res = await fetch(`${base}/api/result.md`);
+  assert.equal(res.status, 200);
+  assert.match(await res.text(), /Not finished yet/);
+  assert.equal((await fetch(`${base}/api/finished`, { method: 'POST', body: '{"finished":"yes"}' })).status, 400);
+  res = await fetch(`${base}/api/finished`, { method: 'POST', body: JSON.stringify({ finished: true }) });
+  assert.equal((await res.json()).finished.by, 'user');
+  assert.match(await (await fetch(`${base}/api/result.md`)).text(), /Finished\*\* — marked as finished by you/);
+  await fetch(`${base}/api/finished`, { method: 'POST', body: JSON.stringify({ finished: false }) });
+  assert.equal(board.state.project.finished, null);
 });
 
 test('requests from other sites and rebinding hosts are refused', async () => {

@@ -35,6 +35,10 @@ export const FINDING_KINDS = [
 export const CONFIDENCE = ['proven', 'checked', 'likely', 'speculative'];
 export const VERDICTS = ['verified', 'refuted', 'inconclusive'];
 
+/** Cards that hold research. Review and check cards only judge it. */
+const isWork = (c) => c.kind === 'idea' || c.kind === 'followup';
+const ROLE_FOR = { review: 'reviewer', check: 'checker' };
+
 export class BoardError extends Error {
   constructor(code, message) {
     super(message);
@@ -105,7 +109,8 @@ export class Board extends EventEmitter {
       const g = text(goal, 'goal', { min: 8, max: 20000 });
       this.state = {
         version: 1,
-        project: { goal: g, title: short(title || g.split('\n')[0], 120), createdAt: now(), verified: [], demo },
+        // result: what the last checker wrote; finished: set by a checker or by the user
+        project: { goal: g, title: short(title || g.split('\n')[0], 120), createdAt: now(), verified: [], demo, result: null, finished: null, resultFile: null },
         config: { ...DEFAULT_CONFIG, ...config },
         orchestrator: { enabled: false, target: 0, paused: false, live: 0, spawned: 0, ideasSpawned: 0, maxIdeas: 0, costUsd: 0, error: null, idle: false },
         seq: { card: 0, finding: 0, agent: 0, event: 0 },
@@ -440,10 +445,10 @@ export class Board extends EventEmitter {
     const now = this.now();
     const card = {
       id,
-      kind, // idea | followup | review
+      kind, // idea | followup | review | check
       title: short(title, 140),
       approach,
-      status, // open | active | proof | derivation | dead_end | reviewed | abandoned
+      status, // open | active | proof | derivation | dead_end | reviewed | reported | abandoned
       proofStatus: null, // in_review | verified | refuted | inconclusive | unreviewed
       parentId: parent?.id ?? null,
       childIds: [],
@@ -490,7 +495,7 @@ export class Board extends EventEmitter {
       if (!card) fail('none_open', wanted ? `There is no card ${wanted}.` : 'No open card is waiting for an agent right now.');
       if (card.status !== 'open') fail('unavailable', `${card.id} is not open (status: ${card.status}).`);
       if (card.reservedFor) fail('unavailable', `${card.id} is reserved for an agent that is being spawned.`);
-      agent = this.registerAgent({ role: card.kind === 'review' ? 'reviewer' : 'followup', origin: 'manual' });
+      agent = this.registerAgent({ role: ROLE_FOR[card.kind] ?? 'followup', origin: 'manual' });
     }
     const now = this.now();
     Object.assign(card, { status: 'active', agentId: agent.id, reservedFor: null, claimedAt: now, lastActivityAt: now });
@@ -515,6 +520,7 @@ export class Board extends EventEmitter {
       previousFindings: card.findingIds.map((id) => this.state.findings[id]),
       previousWorkspaces: (card.workspaces ?? []).filter((w) => w !== this.state.agents[card.agentId]?.workspace),
     };
+    if (card.kind === 'check') return { ...base, triggeredBy: card.triggeredBy ?? null, ...this.#checkMaterial() };
     if (!parent) return base;
     if (card.kind === 'review') {
       // The reviewer sees the submitted proof — never the author's scratch notes.
@@ -535,6 +541,24 @@ export class Board extends EventEmitter {
     };
   }
 
+  /** Everything a checker weighs: proofs and their reviews, partial results, solid findings, the last result. */
+  #checkMaterial() {
+    const cards = Object.values(this.state.cards).filter(isWork);
+    const reviewOf = (c) => c.childIds.map((id) => this.state.cards[id]).find((r) => r.kind === 'review' && r.status === 'reviewed');
+    const proofs = cards.filter((c) => c.status === 'proof');
+    return {
+      verified: proofs
+        .filter((c) => c.proofStatus === 'verified')
+        .map((c) => ({ id: c.id, title: c.title, claim: c.outcome.claim, assumptions: c.outcome.assumptions, review: reviewOf(c)?.outcome.whatWasFound ?? null })),
+      unsettled: proofs.filter((c) => c.proofStatus !== 'verified').map((c) => ({ id: c.id, claim: c.outcome.claim, proofStatus: c.proofStatus })),
+      partial: cards
+        .filter((c) => c.status === 'derivation')
+        .map((c) => ({ id: c.id, title: c.title, established: c.outcome.established, confidence: this.state.findings[c.outcome.findingId]?.confidence ?? null })),
+      solidFindings: Object.values(this.state.findings).filter((f) => !f.auto && ['proven', 'checked', 'verified'].includes(f.confidence)),
+      previousResult: this.state.project.result ?? null,
+    };
+  }
+
   lineage(cardId) {
     const chain = [];
     for (let c = this.state.cards[cardId]; c; c = this.state.cards[c.parentId]) chain.unshift({ id: c.id, title: c.title, status: c.status });
@@ -547,7 +571,14 @@ export class Board extends EventEmitter {
     if (!card || card.agentId !== agent.id || card.status !== 'active')
       fail('no_card', agent.role === 'researcher' ? 'You have no card yet. Go through the queue first: join_queue → wait_turn → claim_card.' : 'Call enter_card first.');
     if (kinds && !kinds.includes(card.kind))
-      fail('wrong_card', card.kind === 'review' ? 'This is a review card. Finish it with submit_review.' : 'This is not a review card. Finish it with submit_proof, submit_derivation or report_dead_end.');
+      fail(
+        'wrong_card',
+        card.kind === 'review'
+          ? 'This is a review card. Finish it with submit_review.'
+          : card.kind === 'check'
+            ? 'This is a result check card. Finish it with submit_result.'
+            : 'This is a research card. Finish it with submit_proof, submit_derivation or report_dead_end.',
+      );
     card.lastActivityAt = this.now();
     return { agent, card };
   }
@@ -680,14 +711,62 @@ export class Board extends EventEmitter {
     if (verdict === 'verified') this.state.project.verified.push(parent.id);
     const label = { verified: 'VERIFIED', refuted: 'REFUTED', inconclusive: 'inconclusive on' }[verdict];
     this.#event('review_submitted', { agentId: agent.id, cardId: card.id, parentId: parent.id, verdict, text: `${agent.name} ${label} the proof on ${parent.id}: ${short(parent.outcome.claim, 100)}` });
-    return { card, parent, verdict };
+    const check = verdict === 'verified' ? this.#openCheck(parent) : null;
+    return { card, parent, verdict, check };
+  }
+
+  /**
+   * A proof was verified: open a card for an agent that checks whether everything
+   * established so far reaches the goal. One waiting check is enough — it will
+   * see every proof verified before it starts.
+   */
+  #openCheck(proofCard) {
+    if (this.state.project.finished) return null;
+    if (Object.values(this.state.cards).some((c) => c.kind === 'check' && c.status === 'open')) return null;
+    const check = this.#createCard({
+      kind: 'check',
+      title: `Is the goal reached? (after ${proofCard.id} was verified)`,
+      approach: 'Compare everything established so far with the goal, decide whether it is reached, and write the result for the user.',
+      status: 'open',
+    });
+    check.triggeredBy = proofCard.id;
+    this.#event('card_opened', { cardId: check.id, kind: 'check', text: `${check.id} opened: is the goal reached now?` });
+    return check;
+  }
+
+  /** A checker closes its card with the current result. finished=true marks the goal as reached. */
+  submitResult({ token, finished, summary, missing, based_on } = {}) {
+    const { agent, card } = this.#working(token, ['check']);
+    if (typeof finished !== 'boolean') fail('invalid', '"finished" must be true or false.');
+    summary = text(summary, 'summary', { min: 20, max: 12000 });
+    missing = text(missing, 'missing', { optional: finished, min: 10, max: 6000 });
+    const basedOn = this.#refs(based_on, 'based_on');
+    this.#close(card, agent, 'reported', { type: 'result', finished, summary, missing, basedOn });
+    this.state.project.result = { cardId: card.id, at: this.now(), finished, summary, missing, basedOn };
+    this.#event('result_submitted', { agentId: agent.id, cardId: card.id, finished, text: `${agent.name} wrote the result on ${card.id}: ${finished ? 'the goal is REACHED' : 'not finished yet'}` });
+    if (finished) this.setFinished(true, { by: 'agent', cardId: card.id });
+    return { card, finished };
+  }
+
+  /** Mark the goal as reached (or not). The user's override, and what a checker's finished=true does. */
+  setFinished(finished, { by = 'user', cardId = null } = {}) {
+    const p = this.state.project;
+    if (Boolean(finished) === Boolean(p.finished)) return p.finished ?? null;
+    if (finished) {
+      p.finished = { at: this.now(), by, cardId };
+      this.#event('goal_finished', { by, cardId, text: by === 'user' ? 'You marked the goal as finished' : `The goal is reached (${cardId})` });
+    } else {
+      p.finished = null;
+      this.#event('goal_reopened', { text: 'The goal was marked as not finished again' });
+    }
+    return p.finished;
   }
 
   // --------------------------------------------------------------- knowledge
 
   /** Cards most similar to a text (reviews and abandoned cards excluded). */
   similarCards(query, k = 5) {
-    const cards = Object.values(this.state.cards).filter((c) => c.kind !== 'review' && c.status !== 'abandoned');
+    const cards = Object.values(this.state.cards).filter((c) => isWork(c) && c.status !== 'abandoned');
     const docs = cards.map((c) => ({ id: c.id, text: `${c.title}. ${c.approach}` }));
     return rank(query, docs)
       .filter((r) => r.score >= this.config.similarFlag)
@@ -701,7 +780,7 @@ export class Board extends EventEmitter {
     const docs = [
       ...Object.values(this.state.findings).map((f) => ({ id: f.id, text: `${f.statement} ${f.detail ?? ''}` })),
       ...Object.values(this.state.cards)
-        .filter((c) => c.kind !== 'review')
+        .filter(isWork)
         .map((c) => ({ id: c.id, text: `${c.title}. ${c.approach} ${this.#takeaway(c) ?? ''}` })),
     ];
     const needle = query.toLowerCase();
@@ -746,7 +825,7 @@ export class Board extends EventEmitter {
 
   /** The compact view of the board that the agent at the head of the queue receives. */
   digest() {
-    const cards = Object.values(this.state.cards).filter((c) => c.kind !== 'review');
+    const cards = Object.values(this.state.cards).filter(isWork);
     const count = (fn) => cards.filter(fn).length;
     return {
       title: this.state.project.title,
@@ -763,6 +842,8 @@ export class Board extends EventEmitter {
         findings: Object.keys(this.state.findings).length,
       },
       cards: cards.map((c) => this.#line(c)).reverse(),
+      // The last checker's verdict: researchers aim at what is still missing.
+      result: this.state.project.result ? { cardId: this.state.project.result.cardId, finished: this.state.project.result.finished, missing: short(this.state.project.result.missing, 600) || null } : null,
       findings: Object.values(this.state.findings)
         .filter((f) => !f.auto)
         .slice(-25)

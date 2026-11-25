@@ -80,12 +80,14 @@ function badge(c) {
   if (c.status === 'abandoned') return 'abandoned';
   if (c.status === 'proof') return { in_review: 'in review', verified: '✓ verified', refuted: '✗ refuted', inconclusive: 'inconclusive', unreviewed: 'unreviewed' }[c.proofStatus];
   if (c.status === 'reviewed') return { verified: '✓ verified', refuted: '✗ refuted', inconclusive: 'inconclusive' }[c.outcome?.verdict];
+  if (c.status === 'reported') return c.outcome?.finished ? '✓ goal reached' : 'not finished yet';
   return null;
 }
 
 function kindText(c) {
   if (c.kind === 'followup') return `continues ${c.parentId}`;
   if (c.kind === 'review') return `reviews ${c.parentId}`;
+  if (c.kind === 'check') return 'checks whether the goal is reached';
   return '';
 }
 
@@ -113,9 +115,9 @@ function cardHtml(c) {
   foot.push(timeTag(c.closedAt ?? c.claimedAt ?? c.createdAt));
   const live = c.status === 'active' && c.lastNote && !c.lastNote.system ? `<p class="live-note clamp">${esc(c.lastNote.text)}</p>` : '';
   return `
-    <div class="card-top"><span class="id">${esc(c.id)}</span><span class="kind" title="${esc(kindText(c))}">${c.parentId ? `${c.kind === 'review' ? 'reviews' : '↳'} ${esc(c.parentId)}` : ''}</span><span class="spacer"></span>${b ? `<span class="badge">${b}</span>` : ''}</div>
+    <div class="card-top"><span class="id">${esc(c.id)}</span><span class="kind" title="${esc(kindText(c))}">${c.parentId ? `${c.kind === 'review' ? 'reviews' : '↳'} ${esc(c.parentId)}` : c.kind === 'check' ? 'result check' : ''}</span><span class="spacer"></span>${b ? `<span class="badge">${b}</span>` : ''}</div>
     <h3>${esc(c.title)}</h3>
-    ${c.kind === 'review' ? '' : `<p class="approach clamp">${esc(c.approach)}</p>`}
+    ${c.kind === 'review' || c.kind === 'check' ? '' : `<p class="approach clamp">${esc(c.approach)}</p>`}
     ${takeaway(c)}${live}
     <div class="card-foot">${foot.join('')}</div>`;
 }
@@ -130,7 +132,7 @@ const COLUMNS = [
 
 function columnOf(c) {
   if (c.status === 'active' || c.status === 'open') return 'active';
-  if (c.kind === 'review') return null; // finished reviews live on their proof card
+  if (c.kind === 'review' || c.kind === 'check') return null; // finished reviews live on their proof card, results in the Reports view
   if (c.status === 'derivation') return 'partial';
   if (c.status === 'proof') return 'proofs';
   return 'dead';
@@ -252,6 +254,13 @@ function renderHeader() {
   $('#stats').innerHTML = stats.map(([cls, n, label]) => `<div class="stat ${cls}"><b>${n}</b><span>${label}</span></div>`).join('');
 
   const controls = [];
+  const fin = state.project.finished;
+  const finTitle = fin
+    ? `Finished — ${fin.by === 'user' ? 'marked by you' : `the result checker on ${fin.cardId} found the goal reached`}. Click to mark it as not finished again.`
+    : 'Not finished. After every verified proof a checker agent decides whether the goal is reached. Click to mark it as finished yourself.';
+  controls.push(
+    `<button class="finish${fin ? ' on' : ''}" data-act="finish" title="${esc(finTitle)}" aria-pressed="${fin ? 'true' : 'false'}"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.5"/><path d="M7.6 12.4l3 3 5.9-6.3"/></svg>Finished</button>`,
+  );
   if (o.enabled) {
     controls.push(`
       <div class="stepper" title="Number of agents the orchestrator keeps alive">
@@ -275,13 +284,18 @@ function renderHeader() {
   }
 
   const banners = [];
+  const resultLink = `<a href="/api/result.md" target="_blank" rel="noopener">Read result.md →</a>`;
+  if (fin)
+    banners.push(
+      `<div class="banner done"><span>✔ The goal is reached — ${fin.by === 'user' ? 'you marked it as finished' : `the result checker on ${esc(fin.cardId)} confirmed it`}.${o.enabled && !state.project.demo ? ' Every agent was stopped.' : ''} ${resultLink}</span></div>`,
+    );
   if (o.error) banners.push(`<div class="banner bad"><span>⚠ ${esc(o.error)}</span><span class="spacer"></span><button class="btn" data-act="resume">Resume</button></div>`);
-  else if (o.paused)
+  else if (o.paused && !fin)
     banners.push(
       `<div class="banner info"><span>${o.live ? `Shutting down — waiting for ${plural(o.live, 'agent')} to exit…` : 'Shut down — no agents are running, and every process they started was stopped too.'} The board stays readable.</span><span class="spacer"></span><button class="btn" data-act="resume">Start again</button></div>`,
     );
-  if (verified) banners.push(`<div class="banner good"><span>✔ ${plural(verified, 'proof')} verified by an independent agent. <a href="#reports">Read the ${verified === 1 ? 'report' : 'reports'} →</a></span></div>`);
-  if (o.enabled && o.idle && !o.paused)
+  if (verified && !fin) banners.push(`<div class="banner good"><span>✔ ${plural(verified, 'proof')} verified by an independent agent. <a href="#reports">Read the ${verified === 1 ? 'report' : 'reports'} →</a></span></div>`);
+  if (o.enabled && o.idle && !o.paused && !fin)
     banners.push(
       state.project.demo
         ? `<div class="banner info"><span>Demo finished — everything you saw was simulated. Run it on your own question: <code>wwresearch run "&lt;your goal&gt;"</code></span></div>`
@@ -409,12 +423,14 @@ function renderReports() {
   const order = { verified: 0, inconclusive: 1, refuted: 2 };
   reviews.sort((a, b) => order[a.outcome.verdict] - order[b.outcome.verdict] || b.closedAt - a.closedAt);
   const pending = cards.filter((c) => c.status === 'proof' && ['in_review', 'unreviewed'].includes(c.proofStatus));
+  const result = state.project.result;
   const html = `
     <div class="reports">
       <header>
         <h1>Reports for you</h1>
         <p>A proof never certifies itself. Each one is checked by a fresh agent that did not write it, and that agent explains what was found, why it holds, and how you can test it without trusting any of this research.</p>
       </header>
+      ${result ? `<article class="report result ${result.finished ? 'verified' : 'inconclusive'}"><div class="report-top"><span class="badge">${result.finished ? '✓ goal reached' : 'not finished yet'}</span><span>${timeTag(result.at)} · ${esc(result.cardId)}</span><span class="spacer"></span><a href="/api/result.md" target="_blank" rel="noopener">result.md ↗</a></div>${resultHtml(result)}</article>` : ''}
       ${pending.length ? `<ul class="pending">${pending.map((c) => `<li data-card="${esc(c.id)}"><span class="id">${esc(c.id)}</span><span>${esc(c.title)}</span><span class="spacer"></span><span class="badge">${c.proofStatus === 'in_review' ? 'review in progress' : 'unreviewed'}</span></li>`).join('')}</ul>` : ''}
       ${reviews.map(reportHtml).join('')}
       ${!reviews.length && !pending.length ? '<div class="none">No proof has been submitted yet.<br />When an agent believes it solved the goal, an independent agent reviews the proof and its report appears here.</div>' : ''}
@@ -434,6 +450,7 @@ const hueFor = (c) => {
   const map = { derivation: 'partial', verified: 'verified', refuted: 'refuted', dead_end: 'dead', abandoned: 'dead', in_review: 'review', inconclusive: 'review', unreviewed: 'review', reviewed: 'review', open: 'dead' };
   let name = map[s] ?? 'progress';
   if (c.kind === 'review' && c.outcome) name = { verified: 'verified', refuted: 'refuted' }[c.outcome.verdict] ?? 'review';
+  if (c.kind === 'check' && c.outcome) name = c.outcome.finished ? 'verified' : 'review';
   return `--hue:var(--${name});--soft:var(--${name}-soft)`;
 };
 
@@ -459,7 +476,14 @@ function outcomeHtml(d) {
       <h4>Why it fails</h4><div class="prose">${prose(o.whyItFails)}</div>
       ${o.salvageable ? `<h4>Worth keeping</h4><div class="prose">${prose(o.salvageable)}</div>` : ''}</div>`;
   if (o.type === 'review') return `<div class="block report ${esc(o.verdict)}" style="padding:16px 18px">${reportSections(o)}</div>`;
+  if (o.type === 'result') return `<div class="block outcome">${resultHtml(o)}</div>`;
   return '';
+}
+
+function resultHtml(r) {
+  return `<h2>${r.finished ? '✓ The goal is reached' : 'Not finished yet'}</h2>
+    <h4>What is established</h4><div class="prose">${prose(r.summary)}</div>
+    ${r.missing ? `<h4>${r.finished ? 'Noted as missing' : 'Still missing'}</h4><div class="prose">${prose(r.missing)}</div>` : ''}`;
 }
 
 async function renderDrawer() {
@@ -613,7 +637,14 @@ document.addEventListener('click', (ev) => {
       if (n && !confirm(msg)) return;
       fetch('/api/shutdown', { method: 'POST' });
     }
-    else if (act === 'resume') setOrchestrator({ paused: false });
+    else if (act === 'finish') {
+      const fin = state.project.finished;
+      const msg = fin
+        ? 'Mark the goal as NOT finished again?\n\nAgents stay stopped until you press Start again.'
+        : `Mark the goal as finished?${o.live ? `\n\n${plural(o.live, 'running agent')} and everything they started will be stopped.` : ''}`;
+      if (!confirm(msg)) return;
+      fetch('/api/finished', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ finished: !fin }) });
+    } else if (act === 'resume') setOrchestrator({ paused: false });
     else if (act === 'more-ideas') setOrchestrator({ maxIdeas: o.maxIdeas + Math.max(o.target, 4) * 2 });
     else if (act === 'dock') openDock();
     else if (act === 'close-dock') $('#dock').close();

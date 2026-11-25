@@ -405,6 +405,15 @@ export function simRunner({ apiUrl, speed = 1 }) {
 
   async function intoCard(token, alive) {
     const entered = await tool('enter_card', { token });
+    if (entered.kind === 'check') {
+      const b = entered.briefing;
+      await sleep(jitter(1800, 3000));
+      if (!alive()) return;
+      await tool('note', { token, text: 'Comparing the verified proofs with the goal as stated.' });
+      await sleep(jitter(1200, 2200));
+      const summary = [...b.verified.map((p) => `- ${p.id}: ${p.claim} (verified by an independent reviewer)`), ...b.partial.map((p) => `- ${p.id}: ${p.established} (partial result)`)].join('\n');
+      return void (await tool('submit_result', { token, finished: b.verified.length > 0, summary, missing: b.verified.length ? undefined : 'A complete proof that survives an independent review.', based_on: b.verified.map((p) => p.id) }));
+    }
     const parentKey = keyByCard.get(entered.briefing.parentId);
     const parent = parentKey?.endsWith('>') ? BY_KEY.get(parentKey.slice(0, -1)).followup : BY_KEY.get(parentKey);
     if (entered.kind === 'review') {

@@ -56,9 +56,11 @@ export function cardPrompt({ goal, token = null, cardId = null, kind, workspace 
   const role =
     kind === 'review'
       ? `You are an independent reviewer. Another agent claims to have solved the goal below. You did not write that proof and have no stake in it — your job is to try to break it, and then to write a short report for the human user.`
-      : kind === 'idea'
-        ? `You take over a research card whose previous agent was interrupted. Its idea, notes and files are waiting for you; you continue where it stopped.`
-        : `You continue a line of research that another agent started. It produced a partial result and a concrete next step; you take it from there.`;
+      : kind === 'check'
+        ? `You are the result checker. A proof was just verified by an independent reviewer. You decide whether everything established so far reaches the goal below, and you write the result for the human user.`
+        : kind === 'idea'
+          ? `You take over a research card whose previous agent was interrupted. Its idea, notes and files are waiting for you; you continue where it stopped.`
+          : `You continue a line of research that another agent started. It produced a partial result and a concrete next step; you take it from there.`;
   const enter = token ? `enter_card with token "${token}"` : cardId ? `enter_card with card_id "${cardId}"` : 'enter_card (no arguments — it assigns you the next open card)';
   return `${role} You coordinate through a shared research board, using ${TOOLS}.
 

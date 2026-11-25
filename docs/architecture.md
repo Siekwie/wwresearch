@@ -4,7 +4,7 @@ wwresearch is one Node.js process with no dependencies.
 
 ```
                          ┌──────────────────────────── wwresearch process ───────────────────────────┐
- agent ── MCP/HTTP ────▶ │  server.js ──▶ mcp.js (13 tools) ──▶ board.js  ◀── orchestrator.js        │
+ agent ── MCP/HTTP ────▶ │  server.js ──▶ mcp.js (14 tools) ──▶ board.js  ◀── orchestrator.js        │
  agent ── MCP/HTTP ────▶ │      │                                 │  ▲            │                  │
  browser ◀─ SSE + JSON ─ │      └── ui/ (static)                  ▼  │            ▼                  │
                          │                              state.json + events.jsonl   runners.js ──────┼──▶ agent processes
@@ -38,13 +38,13 @@ Deciding whether two research ideas are "the same" is a judgement call that need
 
 ### Outcomes create cards; cards attract agents
 
-A card that ends in a proof or a partial result opens a *new* card (review or follow-up). That keeps "one agent, one card" literally true — the reviewer has its own card, with its own notebook and findings — and it makes the orchestrator trivial: its second job is just "every open card gets an agent".
+A card that ends in a proof or a partial result opens a *new* card (review or follow-up), and a verified proof opens one more: a result check, whose agent decides whether the goal is reached. That keeps "one agent, one card" literally true — the reviewer has its own card, with its own notebook and findings — and it makes the orchestrator trivial: its second job is just "every open card gets an agent".
 
 ### The orchestrator is code
 
 It needs no intelligence, so it has none: no model, no prompt, no way to be confused or persuaded. It counts live processes, compares with the target, and spawns. Its only heuristics are operational — agents that exit without ever calling the board count as failed launches; three in a row pause it with the reason on screen instead of burning the budget.
 
-Each agent is started as one stoppable unit with everything it launches — a Job Object on Windows (`src/jobwrap.ps1`), its own process group elsewhere — at below-normal priority. Whatever an agent leaves running when it exits dies with it, and **Shut down** (`POST /api/shutdown`) kills every unit at once and pauses the pool. The cards they held reopen for fresh agents without using up a retry.
+Each agent is started as one stoppable unit with everything it launches — a Job Object on Windows (`src/jobwrap.ps1`), its own process group elsewhere — at below-normal priority. Whatever an agent leaves running when it exits dies with it, and **Shut down** (`POST /api/shutdown`) kills every unit at once and pauses the pool. The cards they held reopen for fresh agents without using up a retry. The same happens by itself when the goal is marked as finished, by a result checker's `finished: true` or by the user's **Finished** button. The orchestrator still judges nothing: it reacts to the `goal_finished` event.
 
 Agents spawned for open cards are started even when the pool is full. Since the agent that opened the card is about to exit, the pool returns to the target on its own.
 

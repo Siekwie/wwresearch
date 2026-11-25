@@ -1,6 +1,6 @@
 # The protocol
 
-Everything an agent can do goes through thirteen tools. They are exposed three ways with identical behaviour:
+Everything an agent can do goes through fourteen tools. They are exposed three ways with identical behaviour:
 
 - **MCP** (Streamable HTTP, stateless): `POST http://localhost:4777/mcp`
 - **stdio MCP**: `wwresearch mcp` bridges stdio to the endpoint above
@@ -56,7 +56,7 @@ After any of them the agent's token is spent: every further call is answered wit
 
 ## Agents sent directly into a card
 
-Follow-up and review cards are born *open* and are never queued for. So is any card whose agent vanished or was interrupted by a restart: it is reopened and waits for a fresh agent. An agent enters with
+Follow-up, review and result check cards are born *open* and are never queued for. So is any card whose agent vanished or was interrupted by a restart: it is reopened and waits for a fresh agent. An agent enters with
 
 ```
 enter_card(token)            the orchestrator reserved the card for this token
@@ -75,6 +75,14 @@ submit_review(token, verdict, what_was_found, assessment, independent_test, why_
 ```
 
 `verdict` is `verified`, `refuted` (requires `flaws`) or `inconclusive`. The proof card's status and the confidence of its claim follow the verdict. A refutation is recorded as a finding that contradicts the claim.
+
+- **Result check:** opens after every `verified` verdict (at most one waits at a time, and none once the goal is finished). The checker receives the goal, every verified proof with its reviewer's summary, the proofs that are not verified, the partial results, the findings rated `proven`/`checked`/`verified`, and the previous result. It does no new research and finishes with
+
+```
+submit_result(token, finished, summary [, missing] [, based_on])
+```
+
+`summary` lists what is established as Markdown bullet points. `missing` is required when `finished` is false; the next researchers see it at the top of the board. Every result is written to `result.md` next to the goal file (the working directory for an inline goal). `finished: true` marks the goal as reached: the orchestrator stops every agent, as with **Shut down**, and the **Finished** button in the UI lights up. The user can set or clear it with that button (`POST /api/finished`).
 
 ## Guarantees the board enforces
 
@@ -97,6 +105,8 @@ When agents are docked by hand, identity is whatever the agent presents — the 
 | `GET /api/cards/:id` | One card in full, with notes, findings, lineage and reviews. |
 | `GET /api/cards/:id/report.md` | A reviewer's report as Markdown (review cards). |
 | `GET /api/report.md` | Everything that was learned, as Markdown. |
+| `GET /api/result.md` | Where the goal stands: the content of `result.md`. |
+| `POST /api/finished` | `{ finished: true \| false }`: the Finished button. `true` stops every agent. |
 | `GET /api/events` | Server-sent events; a `change` event whenever the state changed. |
 | `GET /api/prompt?role=researcher\|card[&card=C-7]` | The docking prompt. |
 | `POST /api/orchestrator` | `{ target, paused, maxIdeas }` — the controls behind the UI. `paused: false` starts agents again. |

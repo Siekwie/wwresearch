@@ -10,7 +10,7 @@ import { createServer } from '../src/server.js';
 import { Orchestrator } from '../src/orchestrator.js';
 import { processRunner } from '../src/runners.js';
 import { simRunner, DEMO_GOAL, DEMO_TITLE, DEMO_IDEAS } from '../src/demo.js';
-import { fullReport, reviewReport } from '../src/report.js';
+import { fullReport, reviewReport, resultReport } from '../src/report.js';
 import { researcherPrompt, cardPrompt } from '../src/prompts.js';
 
 const VERSION = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8')).version;
@@ -117,6 +117,7 @@ const EVENT_STYLE = {
   queue_joined: ['·', c.dim], turn_started: ['·', c.dim], turn_passed: ['·', c.dim], turn_expired: ['!', c.yellow], queue_dropped: ['!', c.yellow],
   card_claimed: ['◆', c.blue], card_entered: ['◆', c.blue], card_opened: ['○', c.cyan], note: null, finding_added: ['+', c.magenta],
   proof_submitted: ['★', c.yellow], derivation_submitted: ['→', c.cyan], dead_end: ['×', c.dim], card_abandoned: ['!', c.yellow], agent_gone: null, project_created: null,
+  result_submitted: ['◎', c.cyan], goal_finished: ['✔', c.green], goal_reopened: ['○', c.yellow],
 };
 
 function logEvent(ev) {
@@ -125,7 +126,30 @@ function logEvent(ev) {
   if (ev.type === 'agent_gone' && !/process exited|board restarted/.test(ev.text)) style = ['!', c.yellow];
   if (!style) return;
   const time = new Date(ev.at).toTimeString().slice(0, 8);
-  console.log(`  ${c.dim(time)}  ${style[1](style[0])} ${ev.type === 'review_submitted' && ev.verdict === 'verified' ? c.bold(ev.text) : ev.text}`);
+  const loud = (ev.type === 'review_submitted' && ev.verdict === 'verified') || ev.type === 'goal_finished';
+  console.log(`  ${c.dim(time)}  ${style[1](style[0])} ${loud ? c.bold(ev.text) : ev.text}`);
+}
+
+/** result.md next to the goal file (or in the working directory): rewritten whenever the state of the goal changes. */
+function resultPath(flags, board) {
+  if (flags.goalFile) return path.join(path.dirname(path.resolve(flags.goalFile)), 'result.md');
+  return board.state.project.resultFile ?? path.resolve('result.md');
+}
+
+const RESULT_EVENTS = new Set(['result_submitted', 'goal_finished', 'goal_reopened', 'review_submitted', 'derivation_submitted']);
+
+function writeResultFile(board) {
+  const file = board.state.project.resultFile;
+  if (!file) return;
+  board.on('event', (ev) => {
+    if (!RESULT_EVENTS.has(ev.type)) return;
+    try {
+      fs.writeFileSync(file, resultReport(board));
+      if (ev.type === 'result_submitted') console.log(`  ${' '.repeat(8)}  ${c.green('→')} result for you: ${path.relative(process.cwd(), file) || file}`);
+    } catch (err) {
+      console.error(`  ${c.red('could not write result.md:')} ${err.message}`);
+    }
+  });
 }
 
 async function listen(board, mcp, flags) {
@@ -179,10 +203,13 @@ function openBoard(flags, goal) {
       if (fs.existsSync(ws)) card.workspaces.push(ws);
     }
     board.recover();
+    board.state.project.resultFile = resultPath(flags, board);
     return { board, dir, resumed: true };
   }
   if (!goal) die('No goal given and no existing board in this directory.\n  wwresearch run "Prove or disprove that …"\n  wwresearch demo   (to just watch how it works)');
-  return { board: new Board({ dir, goal }), dir, resumed: false };
+  const board = new Board({ dir, goal });
+  board.state.project.resultFile = resultPath(flags, board);
+  return { board, dir, resumed: false };
 }
 
 function lifecycle({ board, srv, orchestrator }) {
@@ -278,11 +305,17 @@ async function cmdRun(flags, positional) {
   ]);
   board.on('event', logEvent);
   writeReviewReports(board, dir);
+  writeResultFile(board);
   board.on('orchestrator', (o) => {
     if (o.error && o.error !== cmdRun.lastError) console.log(`\n  ${c.red('paused')} ${o.error}\n  ${c.dim(`Agent logs: ${path.relative(process.cwd(), path.join(dir, 'logs'))}`)}\n`);
     cmdRun.lastError = o.error;
   });
-  orchestrator.on('shutdown', ({ agents: n }) => console.log(`\n  ${c.yellow('Shut down from the board:')} ${n} agent${n === 1 ? '' : 's'} and everything they started were stopped. ${c.dim('Start them again in the UI, or press Ctrl+C to quit.')}\n`));
+  orchestrator.on('shutdown', ({ agents: n, reason }) => {
+    const what = `${n} agent${n === 1 ? '' : 's'} and everything they started were stopped.`;
+    if (reason === 'the goal is reached')
+      console.log(`\n  ${c.green(c.bold('The goal is reached.'))} ${what} Result: ${path.relative(process.cwd(), board.state.project.resultFile) || 'result.md'}\n  ${c.dim('The board stays up. Unmark Finished and start again in the UI to keep going, or press Ctrl+C.')}\n`);
+    else console.log(`\n  ${c.yellow('Shut down from the board:')} ${what} ${c.dim('Start them again in the UI, or press Ctrl+C to quit.')}\n`);
+  });
   orchestrator.on('idle', () => {
     const s = board.digest().counts;
     console.log(`\n  ${c.bold('All agents are done.')} ${s.ideas} approaches · ${s.verified} verified · ${s.derivations} partial results · ${s.deadEnds} dead ends`);
@@ -305,6 +338,7 @@ async function cmdServe(flags, positional) {
   console.log(`  Dock an agent:\n    ${c.bold(`claude mcp add --transport http wwresearch ${mcpUrl}`)}\n    then, inside Claude Code:  ${c.bold('/mcp__wwresearch__researcher')}\n`);
   board.on('event', logEvent);
   writeReviewReports(board, dir);
+  writeResultFile(board);
   lifecycle({ board, srv });
   if (!flags.noOpen && process.stdout.isTTY) openBrowser(url);
 }
@@ -320,6 +354,7 @@ async function cmdDemo(flags) {
     target: number(flags.agents, 'agents', 5),
     maxIdeas: DEMO_IDEAS,
     lenses: false,
+    stopWhenFinished: false, // the demo plays to the end to show the whole board
   });
   banner([
     ['Demo', 'a simulated swarm — no model, no API key, no cost'],

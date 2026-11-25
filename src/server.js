@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BoardError } from './board.js';
-import { fullReport, reviewReport } from './report.js';
+import { fullReport, reviewReport, resultReport } from './report.js';
 import { researcherPrompt, cardPrompt } from './prompts.js';
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'ui');
@@ -125,6 +125,14 @@ export function createServer({ board, mcp, host = '127.0.0.1', port = 4777 }) {
       return send(res, 200, board.cardDetail(id));
     }
     if (p === '/api/report.md' && req.method === 'GET') return send(res, 200, fullReport(board), { 'content-type': 'text/markdown; charset=utf-8' });
+    if (p === '/api/result.md' && req.method === 'GET') return send(res, 200, resultReport(board), { 'content-type': 'text/markdown; charset=utf-8' });
+    if (p === '/api/finished' && req.method === 'POST') {
+      // The user's override of the Finished button. Marking it finished stops every agent (the orchestrator listens).
+      const body = await readJson(req);
+      if (typeof body.finished !== 'boolean') return send(res, 400, { error: '"finished" must be true or false' });
+      board.setFinished(body.finished, { by: 'user' });
+      return send(res, 200, { ok: true, finished: board.state.project.finished ?? null });
+    }
     if (p === '/api/prompt' && req.method === 'GET') {
       const goal = board.state.project.goal;
       const role = url.searchParams.get('role') ?? 'researcher';

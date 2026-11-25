@@ -254,6 +254,52 @@ button {
   vertical-align: -2px;
   margin-right: 5px;
 }
+/* Finished: a muted, greyish green until the goal is reached, then it lights up. */
+.finish {
+  --done: #22c55e;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 12px 0 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--verified) 28%, var(--line-strong));
+  background: color-mix(in srgb, var(--verified) 6%, var(--surface));
+  color: color-mix(in srgb, var(--verified) 42%, var(--faint));
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 0.25s, color 0.25s, box-shadow 0.25s, border-color 0.25s;
+}
+.finish svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.finish:hover {
+  color: color-mix(in srgb, var(--verified) 80%, var(--faint));
+  border-color: color-mix(in srgb, var(--verified) 55%, var(--line-strong));
+}
+.finish.on {
+  background: var(--done);
+  border-color: var(--done);
+  color: #04290f;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--done) 28%, transparent), 0 0 18px color-mix(in srgb, var(--done) 60%, transparent);
+}
+.finish.on svg circle {
+  fill: #fff;
+  stroke: #fff;
+}
+.finish.on svg path {
+  stroke: #15803d;
+  stroke-width: 2.6;
+}
+.finish.on:hover {
+  filter: brightness(1.06);
+}
 .btn.icon {
   padding: 6px 9px;
   display: inline-grid;
@@ -317,6 +363,10 @@ button {
 .banner.good {
   background: var(--verified-soft);
   color: var(--verified);
+}
+.banner.done {
+  background: #22c55e;
+  color: #04290f;
 }
 .banner.bad {
   background: var(--refuted-soft);

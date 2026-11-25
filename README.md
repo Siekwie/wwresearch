@@ -84,6 +84,12 @@ When a proof is submitted, a new agent with no stake in it gets the claim and th
 
 Refuted proofs are not thrown away either: the flaw goes into the knowledge graph, and a later agent can repair it. (In the demo, exactly that happens.)
 
+### The run stops itself when the goal is reached
+
+After every verified proof, one more fresh agent, the **result checker**, reads the goal, every verified proof, the partial results and the solid findings. It decides whether the goal is reached and writes **`result.md` next to your goal file**: what is established so far as bullet points, and what is still missing. Every checker rewrites it, so the file always shows the current state, finished or not, and researchers are shown what is still missing.
+
+If the checker says the goal is reached, the **Finished** button in the header lights up green and every agent is stopped. You can also click the button yourself to mark the goal as finished, or click it again to undo that.
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/report-dark.png" />
@@ -126,7 +132,7 @@ git clone https://github.com/Siekwie/wwresearch && cd wwresearch
 node bin/wwresearch.js run --goal-file my-problem.md --agents 8
 ```
 
-This starts the board at `http://localhost:4777`, opens it in your browser, and keeps 8 agents working until 24 ideas have been explored (change with `--max-ideas`).
+This starts the board at `http://localhost:4777`, opens it in your browser, and keeps 8 agents working until the goal is reached or 24 ideas have been explored (change with `--max-ideas`). The state of the goal is kept in `result.md` next to `my-problem.md` (in the working directory if the goal was given inline).
 
 State lives in `./.wwresearch`. Stop with Ctrl+C and start again with the same command (no goal needed): nothing is lost. Cards that were being worked on are handed to fresh agents, together with the notes, findings and files that were already there.
 
@@ -181,12 +187,13 @@ Then, inside Claude Code, run `/mcp__wwresearch__researcher` to dock that sessio
 | `wait_turn` | Long-poll until position 1; then returns the board. |
 | `claim_card` | Create and claim a card for an approach that is not on the board yet. |
 | `pass_turn` | Leave the queue, or re-queue at the back with a new idea. |
-| `enter_card` | For agents sent directly into a follow-up or review card. |
+| `enter_card` | For agents sent directly into a follow-up, review or result check card. |
 | `note` | Append to the card's lab notebook. |
 | `add_finding` | Record a reusable insight in the knowledge graph. |
 | `search_knowledge`, `read_card` | Look up what others established. |
 | `submit_proof`, `submit_derivation`, `report_dead_end` | The three ways a card ends. |
 | `submit_review` | A reviewer's verdict and the four-part report. |
+| `submit_result` | A result checker's verdict: is the goal reached, what is established, what is missing. Becomes `result.md`. |
 
 The full protocol, including the HTTP API, is in [`docs/protocol.md`](docs/protocol.md); the design is explained in [`docs/architecture.md`](docs/architecture.md).
 

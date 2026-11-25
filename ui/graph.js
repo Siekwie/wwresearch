@@ -15,6 +15,7 @@ const svgEl = (name, attrs = {}, parent = null) => {
 const NEGATIVE = new Set(['obstruction', 'counterexample', 'refutation']);
 
 export function cardHue(c) {
+  if (c.kind === 'check') return c.outcome ? (c.outcome.finished ? 'var(--verified)' : 'var(--review)') : 'var(--faint)';
   if (c.status === 'proof' || c.kind === 'review') {
     const v = c.kind === 'review' ? c.outcome?.verdict : c.proofStatus;
     if (v === 'verified') return 'var(--verified)';
@@ -63,9 +64,10 @@ export function createGraph(root, { onSelect, onHover }) {
     const links = [];
     wanted.set('goal', { type: 'goal', r: 25, charge: 3.2, hue: null, inner: 'GOAL', label: '' });
     for (const c of Object.values(state.cards)) {
-      const review = c.kind === 'review';
+      const review = c.kind === 'review' || c.kind === 'check'; // small judging nodes
       wanted.set(c.id, { type: 'card', r: review ? 9 : 15, charge: review ? 1.2 : 2.2, hue: cardHue(c), inner: review ? '' : c.id, label: review ? '' : clip(c.title, 26), anchor: c.parentId ?? 'goal' });
-      if (review) links.push({ s: c.parentId, t: c.id, type: 'review', len: 52, k: 0.5 });
+      if (c.kind === 'check') links.push({ s: 'goal', t: c.id, type: 'review', len: 70, k: 0.4 });
+      else if (review) links.push({ s: c.parentId, t: c.id, type: 'review', len: 52, k: 0.5 });
       else if (c.parentId) links.push({ s: c.parentId, t: c.id, type: 'parent', len: 120, k: 0.4 });
       else links.push({ s: 'goal', t: c.id, type: 'root', len: 215, k: 0.22 });
       for (const ref of c.buildsOn ?? []) links.push({ s: ref, t: c.id, type: 'builds', len: 130, k: 0.03 });

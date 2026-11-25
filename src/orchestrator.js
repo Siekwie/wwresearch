@@ -1,15 +1,16 @@
 // The orchestrator. Plain code, no model, and deliberately only two jobs:
 //
 //   1. keep the number of live agents at the value the user set
-//   2. react to events: when a proof or follow-up card opens, spawn an agent
-//      directly into that card — no queue
+//   2. react to events: when a review, check or follow-up card opens, spawn an
+//      agent directly into that card — no queue; when the goal is marked as
+//      reached, stop every agent
 //
 // It never reads research, never judges ideas, never talks to agents.
 
 import { EventEmitter } from 'node:events';
 import { researcherPrompt, cardPrompt, pickLens } from './prompts.js';
 
-const CLOSING = new Set(['proof_submitted', 'derivation_submitted', 'dead_end', 'review_submitted']);
+const CLOSING = new Set(['proof_submitted', 'derivation_submitted', 'dead_end', 'review_submitted', 'result_submitted']);
 
 export class Orchestrator extends EventEmitter {
   /**
@@ -23,9 +24,10 @@ export class Orchestrator extends EventEmitter {
    * @param {number} [opts.heartbeatMs]    pass agent output on to the board at most this often
    * @param {(agent: object) => string|null} [opts.workspaceFor]
    */
-  constructor({ board, spawnAgent, target, maxIdeas = 0, lenses = true, agentTimeoutMs = 0, heartbeatMs = 60_000, workspaceFor = () => null, retryDelayMs = 2000, finishGraceMs = 30_000, notes = [] }) {
+  constructor({ board, spawnAgent, target, maxIdeas = 0, lenses = true, agentTimeoutMs = 0, heartbeatMs = 60_000, workspaceFor = () => null, retryDelayMs = 2000, finishGraceMs = 30_000, notes = [], stopWhenFinished = true }) {
     super();
     this.board = board;
+    this.stopWhenFinished = stopWhenFinished; // the goal is reached → stop every agent (the demo keeps going)
     this.spawnAgent = spawnAgent;
     this.lenses = lenses;
     this.agentTimeoutMs = agentTimeoutMs;
@@ -44,6 +46,8 @@ export class Orchestrator extends EventEmitter {
     this.onEvent = (ev) => {
       // Job 2 — the "prefabricated message": a card just opened and wants an agent.
       if (ev.type === 'card_opened') this.schedule();
+      // A checker (or the user) says the goal is reached: nothing left to research.
+      if (ev.type === 'goal_finished' && this.stopWhenFinished) this.shutdown('the goal is reached');
       // The board released an agent (lease expired): make sure its process is gone too.
       if (ev.type === 'agent_gone') this.#kill(this.live.get(ev.agentId));
       // An agent closed its card: its work is done and its token is spent. Give the
@@ -83,7 +87,7 @@ export class Orchestrator extends EventEmitter {
 
     // Job 2: every open card gets an agent, directly.
     for (const card of this.board.openCards()) {
-      if (!card.reservedFor) this.#spawn(card.kind === 'review' ? 'reviewer' : 'followup', card);
+      if (!card.reservedFor) this.#spawn({ review: 'reviewer', check: 'checker' }[card.kind] ?? 'followup', card);
     }
     // Job 1: keep the pool full with researchers that go through the queue.
     while (this.live.size < o.target && (o.maxIdeas === 0 || o.ideasSpawned < o.maxIdeas)) this.#spawn('researcher', null);
@@ -196,7 +200,7 @@ export class Orchestrator extends EventEmitter {
       this.board.agentGone(rec.agent.id, reason, { restart: true });
       this.#kill(rec);
     }
-    this.emit('shutdown', { agents: recs.length });
+    this.emit('shutdown', { agents: recs.length, reason });
     return recs.length;
   }
 

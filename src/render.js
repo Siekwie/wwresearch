@@ -27,6 +27,8 @@ export function statusLabel(c) {
       return 'abandoned · free to retry';
     case 'reviewed':
       return 'review done';
+    case 'reported':
+      return 'result written';
     default:
       return c.status;
   }
@@ -48,6 +50,8 @@ function boardBlock(board, maxCards = 150) {
     `${n.findings} findings`,
   ];
   const lines = [`BOARD · ${parts.join(' · ')}`];
+  if (board.result && !board.result.finished && board.result.missing)
+    lines.push(`STILL MISSING for the goal (checked on ${board.result.cardId}): ${board.result.missing}`);
   if (!board.cards.length) lines.push('(empty — you are the first)');
   for (const c of board.cards.slice(0, maxCards)) lines.push(cardLines(c));
   if (board.cards.length > maxCards)
@@ -167,6 +171,37 @@ export function renderBriefing({ agent, card, briefing: b }, { showToken = false
     );
     return out.join('\n');
   }
+  if (card.kind === 'check') {
+    out.push(
+      `You are the result checker on ${card.id}.${b.triggeredBy ? ` A proof on ${b.triggeredBy} was just verified by an independent reviewer.` : ''}`,
+      'Your job: decide whether everything established so far reaches the GOAL, and write the result for the user. You do no new research.',
+      '',
+      'GOAL',
+      b.goal,
+      '',
+      'VERIFIED PROOFS (checked by an agent that did not write them)',
+    );
+    if (!b.verified.length) out.push('(none)');
+    for (const p of b.verified) out.push(`${p.id} "${p.title}": ${p.claim}${p.assumptions ? `\n    assumes: ${short(p.assumptions, 400)}` : ''}${p.review ? `\n    reviewer: ${short(p.review, 500)}` : ''}`);
+    if (b.unsettled.length) out.push('', 'PROOFS THAT ARE NOT VERIFIED (do not count them as established)', ...b.unsettled.map((p) => `${p.id} [${p.proofStatus}] ${p.claim}`));
+    if (b.partial.length) out.push('', 'PARTIAL RESULTS', ...b.partial.map((p) => `${p.id} [${p.confidence ?? 'unrated'}] ${p.established}`));
+    if (b.solidFindings.length) out.push('', 'FINDINGS RATED proven / checked / verified', ...b.solidFindings.map((f) => `${f.id} [${f.kind} · ${f.confidence} · ${f.cardId}] ${f.statement}`));
+    if (b.previousResult) out.push('', `THE PREVIOUS RESULT (${b.previousResult.cardId}, ${b.previousResult.finished ? 'finished' : 'not finished'})`, b.previousResult.summary, ...(b.previousResult.missing ? ['Missing then:', b.previousResult.missing] : []));
+    out.push(...notesBlock(b.previousNotes, 'NOTES LEFT ON THIS CARD BY A PREVIOUS CHECKER'));
+    out.push(
+      '',
+      'HOW TO CHECK',
+      '1. Read the goal exactly, especially what it says counts as solved. read_card(id) shows any proof in full.',
+      '2. Decide: is the goal fully reached by the verified proofs — or by established results whose combination is immediate and which you checked yourself? A proof of a special case, a weaker statement or a different claim does not finish the goal.',
+      '3. Call submit_result with:',
+      '   finished: true or false',
+      '   summary: what is established so far, as Markdown bullet points, each naming its card ids. It becomes result.md for the user, so write it for a human.',
+      '   missing: what is still needed to reach the goal (required when finished is false). Researchers read it to know what to attack next.',
+      '   based_on: the ids your verdict rests on.',
+      'Be strict: "finished" stops every agent. Then stop: one agent, one card.',
+    );
+    return out.join('\n');
+  }
   if (!b.parentId) {
     // An idea card whose agent was interrupted: take it over where it stopped.
     out.push(
@@ -234,6 +269,9 @@ export function renderCard(d) {
   } else if (o?.type === 'review') {
     out.push('', `VERDICT: ${o.verdict}`, '', 'WHAT WAS FOUND', o.whatWasFound, '', 'ASSESSMENT', o.assessment, '', 'INDEPENDENT TEST', o.independentTest, '', 'WHY IT IS INDEPENDENT', o.whyIndependent);
     if (o.flaws) out.push('', 'FLAWS', o.flaws);
+  } else if (o?.type === 'result') {
+    out.push('', `RESULT: ${o.finished ? 'the goal is reached' : 'not finished yet'}`, o.summary);
+    if (o.missing) out.push('', 'STILL MISSING', o.missing);
   }
   for (const r of d.reviews) {
     if (r.outcome) out.push('', `REVIEW ${r.id}: ${r.outcome.verdict.toUpperCase()}`, r.outcome.assessment, ...(r.outcome.flaws ? [`Flaws: ${r.outcome.flaws}`] : []));
