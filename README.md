@@ -115,6 +115,8 @@ It is plain code, not a model, and it has exactly two jobs:
 1. keep the number of live agents at the value you set (you can change it while it runs), and
 2. react to events: when a proof or follow-up card opens, spawn an agent directly into that card — no queue.
 
+The number you set is a cap for both jobs. Cards that wait for an agent come before new ideas, and when more cards wait than you allow agents (after a restart, every card that was in progress is open again), they are worked off as slots free up: result checks first, then reviews, then research cards, oldest first. Lowering the number never kills a running agent; the pool shrinks as agents finish.
+
 It never reads research and never judges ideas.
 
 ## Use it on your own problem
@@ -140,7 +142,7 @@ Write the goal like you would brief a capable colleague: the exact statement, wh
 
 | Option | What it does |
 |---|---|
-| `-n, --agents N` | Agents to keep alive (default 4). Adjustable live in the UI. |
+| `-n, --agents N` | Agents to keep alive, and never more than that (default 4). Adjustable live in the UI. |
 | `--max-ideas N` | Stop sending new researchers after N ideas (default 24, `0` = unlimited). |
 | `--model NAME` | Model for the agents, e.g. `sonnet` or `opus`. |
 | `--permissions MODE` | What agents may do: `auto` (default), `full` or `safe` — see below. |
@@ -160,7 +162,7 @@ Write the goal like you would brief a capable colleague: the exact statement, wh
 
 Agents run in the directory you start wwresearch from, with your user's rights. They are told to keep scratch files in a private workspace under `.wwresearch/workspaces/` and to leave everything else alone — but that is an instruction, not a wall. For goals that pull in untrusted material from the web, use a container.
 
-**What it costs.** One agent per card, plus one per follow-up and one per review. `--max-ideas`, `--max-budget-usd` and `--agent-timeout` bound the spend; the UI shows the running total when the agent reports it. Start small.
+**What it costs.** One agent per card, plus one per follow-up and one per review. `--max-ideas`, `--max-budget-usd` and `--agent-timeout` bound the spend. The UI shows the running total: Claude Code reports the cost of a session at the end of each of its turns, and the board adds it up as it comes in. An agent that is stopped in the middle of its first turn never reports one; the total then carries a `+` and is a lower bound. Start small.
 
 Other commands: `wwresearch status` (board summary in the terminal), `wwresearch report -o REPORT.md` (everything that was learned, as Markdown), `wwresearch serve` (board only), `wwresearch --help`.
 
@@ -215,10 +217,10 @@ It can't. `submit_proof` only opens a review; a different agent, which never see
 It means an independent agent tried to break it and could not. That is a much stronger signal than self-assessment, but it is still a model's judgement — which is exactly why every report ends with an independent test for you.
 
 **What happens when an agent crashes?**
-Its card is reopened and a fresh agent takes it over, with the notes, findings and files the first one left. The same happens to every running card when you stop and restart the board. If agents fail to start at all (not logged in, command missing), the orchestrator pauses instead of burning through the budget, and tells you why.
+Its card is reopened and a fresh agent takes it over, with the notes, findings and files the first one left. The same happens to every running card when you stop and restart the board. A card that loses three agents in a row is marked as abandoned and no longer handed on by itself; open it in the UI and press **Hand it to a fresh agent** if you want it continued (for an abandoned review that is the way to get the proof reviewed after all). If agents fail to start at all (not logged in, command missing), the orchestrator pauses instead of burning through the budget, and tells you why.
 
 **What if I leave it running overnight?**
-Every agent runs at below-normal CPU priority together with everything it starts, so the desktop stays usable. Long searches are fine: an agent counts as active as long as its process prints anything (Claude Code prints a heartbeat every 30 s while a shell command runs), not only when it calls the board. An agent is released only after an hour with neither, or after `--agent-timeout` in total. When an agent exits, is timed out or is released, the background jobs it started (`nohup ./search &` and the like) are killed with it — on Windows through a Job Object, elsewhere through its process group. **Shut down** in the UI kills every running agent and all of its processes at once; the board stays readable, and **Start again** picks up where it left off.
+Every agent runs at below-normal CPU priority together with everything it starts, so the desktop stays usable. Every agent is also told how many CPU threads the machine has and how many agents share it, and to stop only processes it started itself, never by name. Long searches are fine: an agent counts as active as long as its process prints anything (Claude Code prints a heartbeat every 30 s while a shell command runs), and also while it waits in silence for a job it started in the background, not only when it calls the board. An agent is released only after an hour with none of these, or after `--agent-timeout` in total. When an agent exits, is timed out or is released, the background jobs it started (`nohup ./search &` and the like) are killed with it — on Windows through a Job Object, elsewhere through its process group. **Shut down** in the UI kills every running agent and all of its processes at once; the board stays readable, and **Start again** picks up where it left off.
 
 **Only for mathematics?**
 No. "Proof" means "evidence that the goal is met": a proof, a reproducing script, a benchmark result, a counterexample. The demo uses √2 because everyone can check it.

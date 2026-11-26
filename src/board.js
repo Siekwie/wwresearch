@@ -10,8 +10,11 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { rank } from './similarity.js';
 
+// uncosted: agents that worked but were stopped before they could report what they cost
+const ORCHESTRATOR = { enabled: false, target: 0, paused: false, live: 0, spawned: 0, ideasSpawned: 0, maxIdeas: 0, costUsd: 0, uncosted: 0, error: null, idle: false };
+
 export const DEFAULT_CONFIG = {
-  turnSeconds: 180, // how long the agent at the head may hold the board
+  turnSeconds: 300, // how long the agent at the head may hold the board
   queueIdleSeconds: 180, // waiting agents that stop polling are dropped
   pollSeconds: 50, // long-poll duration of wait_turn
   cardLeaseMinutes: 60, // active cards with no board call and no agent output for this long are released
@@ -103,6 +106,8 @@ export class Board extends EventEmitter {
     if (file && fs.existsSync(file)) {
       this.state = JSON.parse(fs.readFileSync(file, 'utf8'));
       this.state.config = { ...DEFAULT_CONFIG, ...this.state.config, ...config };
+      // A board written by an older version lacks the fields added since.
+      this.state.orchestrator = { ...ORCHESTRATOR, ...this.state.orchestrator };
       for (const a of Object.values(this.state.agents)) this.tokens.set(a.token, a.id);
       this.resumed = true;
     } else {
@@ -112,7 +117,7 @@ export class Board extends EventEmitter {
         // result: what the last checker wrote; finished: set by a checker or by the user
         project: { goal: g, title: short(title || g.split('\n')[0], 120), createdAt: now(), verified: [], demo, result: null, finished: null, resultFile: null },
         config: { ...DEFAULT_CONFIG, ...config },
-        orchestrator: { enabled: false, target: 0, paused: false, live: 0, spawned: 0, ideasSpawned: 0, maxIdeas: 0, costUsd: 0, error: null, idle: false },
+        orchestrator: { ...ORCHESTRATOR },
         seq: { card: 0, finding: 0, agent: 0, event: 0 },
         stats: { boardReads: 0, duplicatesAvoided: 0, turnsExpired: 0 },
         agents: {},
@@ -289,6 +294,25 @@ export class Board extends EventEmitter {
       }
       this.#event('card_abandoned', { cardId: card.id, text: `${card.id} abandoned: ${card.title}` });
     }
+  }
+
+  /**
+   * Hand an abandoned card to a fresh agent after all — the user's decision.
+   * A card is abandoned when several agents in a row vanished on it; that says
+   * little about the idea (a long computation and an impatient lease are enough).
+   * Notes, findings and files are still on the card, and it gets its retries back.
+   */
+  reopenCard(cardId) {
+    const card = this.state.cards[String(cardId ?? '').trim().toUpperCase()];
+    if (!card) fail('not_found', `There is no card ${cardId}.`);
+    if (card.status !== 'abandoned') fail('unavailable', `${card.id} is not abandoned (status: ${card.status}).`);
+    const parent = this.state.cards[card.parentId];
+    if (card.kind === 'review' && parent?.proofStatus !== 'unreviewed') fail('unavailable', `The proof on ${parent?.id} is no longer waiting for a review.`);
+    Object.assign(card, { status: 'open', agentId: null, reservedFor: null, reopens: 0, closedAt: null });
+    card.notes.push({ at: this.now(), system: true, text: 'Reopened by the user: a fresh agent takes over.' });
+    if (card.kind === 'review') parent.proofStatus = 'in_review';
+    this.#event('card_opened', { cardId: card.id, kind: card.kind, reopened: true, text: `${card.id} reopened by you — a fresh agent takes over: ${card.title}` });
+    return card;
   }
 
   // ------------------------------------------------------------------- queue
@@ -809,24 +833,45 @@ export class Board extends EventEmitter {
     return null;
   }
 
-  #line(c) {
+  /**
+   * One card as a line of the board. `lim` says how many characters each part
+   * may take; `extra` is for what a later agent can pick up: the variant a dead
+   * end left as possibly still working, and a next step nobody was sent to.
+   */
+  #line(c, lim = { approach: 240, takeaway: 260, extra: 0 }) {
+    const o = c.outcome;
     return {
       id: c.id,
       kind: c.kind,
       status: c.status,
       proofStatus: c.proofStatus,
       title: c.title,
-      approach: short(c.approach, 240),
-      takeaway: short(this.#takeaway(c), 260) || null,
+      approach: short(c.approach, lim.approach),
+      takeaway: short(this.#takeaway(c), lim.takeaway) || null,
+      salvageable: (lim.extra && o?.type === 'dead_end' && short(o.salvageable, lim.extra)) || null,
+      openNextStep: (lim.extra && o?.type === 'derivation' && !o.followupId && short(o.nextStep, lim.extra)) || null,
       parentId: c.parentId,
-      followupId: c.outcome?.followupId ?? null,
+      followupId: o?.followupId ?? null,
     };
   }
 
-  /** The compact view of the board that the agent at the head of the queue receives. */
+  /**
+   * The view of the board that the agent at the head of the queue receives.
+   * It is read once per card and decides what that agent works on for hours,
+   * so a small board is shown generously: enough of each approach, of why a
+   * dead end failed and of what it left open to tell ideas apart and to build
+   * on them. The allowance per card shrinks as the board grows, which keeps
+   * the whole text within roughly 20,000 tokens.
+   */
   digest() {
     const cards = Object.values(this.state.cards).filter(isWork);
     const count = (fn) => cards.filter(fn).length;
+    const scale = Math.min(1, 40 / Math.max(cards.length, 1));
+    const lim = {
+      approach: Math.max(240, Math.round(520 * scale)),
+      takeaway: Math.max(260, Math.round(720 * scale)),
+      extra: cards.length > 100 ? 0 : Math.max(160, Math.round(360 * scale)),
+    };
     return {
       title: this.state.project.title,
       counts: {
@@ -841,14 +886,14 @@ export class Board extends EventEmitter {
         abandoned: count((c) => c.status === 'abandoned'),
         findings: Object.keys(this.state.findings).length,
       },
-      cards: cards.map((c) => this.#line(c)).reverse(),
+      cards: cards.map((c) => this.#line(c, lim)).reverse(),
       // The last checker's verdict: researchers aim at what is still missing.
       result: this.state.project.result ? { cardId: this.state.project.result.cardId, finished: this.state.project.result.finished, missing: short(this.state.project.result.missing, 600) || null } : null,
       findings: Object.values(this.state.findings)
         .filter((f) => !f.auto)
-        .slice(-25)
+        .slice(-30)
         .reverse()
-        .map((f) => ({ id: f.id, kind: f.kind, confidence: f.confidence, cardId: f.cardId, statement: short(f.statement, 220) })),
+        .map((f) => ({ id: f.id, kind: f.kind, confidence: f.confidence, cardId: f.cardId, statement: short(f.statement, 400) })),
     };
   }
 

@@ -300,3 +300,100 @@ test('shut down kills every live agent, hands cards on and spawns nothing until 
   assert.ok(spawned.slice(count).some((s) => s.role === 'followup' && s.card.id === followup.id), 'starting again picks the card up');
   orch.stop();
 });
+
+test('the agent count is a hard cap: after a restart reopened cards wait for a free slot', async () => {
+  const board = new Board({ goal: 'Find a proof of the statement.' });
+  // the previous run: five agents, each in the middle of a card
+  for (let i = 1; i <= 5; i++) {
+    const { agent } = board.joinQueue({ idea: `Idea number ${i} for the statement, unlike the others.` });
+    board.peekTurn(agent.token);
+    board.claimCard({ token: agent.token, title: `Idea ${i}`, approach: `Approach number ${i}, described in enough detail.`, different_because: 'It is a different idea.' });
+  }
+  board.recover(); // the board is started again
+  assert.equal(board.openCards().length, 5);
+
+  const { spawned, spawnAgent } = manualRunner();
+  const orch = new Orchestrator({ board, spawnAgent, target: 2, maxIdeas: 5 });
+  board.setOrchestrator({ ideasSpawned: 5 });
+  orch.start();
+  await until(() => spawned.length === 2);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(spawned.length, 2, 'two agents, not one per reopened card');
+  assert.deepEqual(spawned.map((s) => s.card.id), ['C-1', 'C-2'], 'oldest cards first');
+
+  // a card is closed: its agent no longer counts, the next card gets its agent at once
+  board.enterCard({ token: spawned[0].agent.token });
+  board.reportDeadEnd({ token: spawned[0].agent.token, why_it_fails: 'It does not generalise beyond the base case.' });
+  await until(() => spawned.length === 3);
+  assert.equal(spawned[2].card.id, 'C-3');
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(spawned.length, 3);
+
+  // a proof: its review goes before the research cards that are still waiting
+  board.enterCard({ token: spawned[1].agent.token });
+  const { review } = board.submitProof({ token: spawned[1].agent.token, ...PROOF });
+  await until(() => spawned.length === 4);
+  assert.equal(spawned[3].card.id, review.id);
+
+  // the user raises the number: the remaining cards are picked up, and never more than that
+  board.setOrchestrator({ target: 4 });
+  await until(() => spawned.length === 6);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(spawned.length, 6);
+  assert.equal(board.openCards().filter((c) => !c.reservedFor).length, 0);
+  orch.stop();
+});
+
+test('costs are added up as agents report them; agents stopped before reporting are counted', async () => {
+  const board = new Board({ goal: 'Find a proof of the statement.' });
+  const { spawned, spawnAgent } = manualRunner();
+  const orch = new Orchestrator({ board, spawnAgent, target: 2, maxIdeas: 2 }).start();
+  await until(() => spawned.length === 2);
+  const [a, b] = spawned;
+  a.onCost(1.5);
+  assert.equal(board.state.orchestrator.costUsd, 1.5, 'the cost is on the board before the agent exits');
+  a.onCost(2.25); // the session total after its next turn
+  assert.equal(board.state.orchestrator.costUsd, 2.25);
+  board.joinQueue({ token: a.agent.token, idea: 'A first idea for the statement.' });
+  a.exit({ code: 0, costUsd: 2.25 });
+  await until(() => board.state.orchestrator.live === 1);
+  assert.equal(board.state.orchestrator.costUsd, 2.25, 'the final report is not added a second time');
+  assert.equal(board.state.orchestrator.uncosted, 0);
+
+  // b worked on the board, then was stopped in the middle of its first turn
+  board.joinQueue({ token: b.agent.token, idea: 'A second idea for the statement.' });
+  b.exit({ code: 1 });
+  await until(() => board.state.orchestrator.live === 0);
+  assert.equal(board.state.orchestrator.costUsd, 2.25);
+  assert.equal(board.state.orchestrator.uncosted, 1, 'the total is marked as a lower bound');
+  orch.stop();
+});
+
+test('Ctrl+C reaching an agent first is an interruption, not a failure of its card', async () => {
+  const board = new Board({ goal: 'Find a proof of the statement.' });
+  const { spawned, spawnAgent } = manualRunner();
+  const orch = new Orchestrator({ board, spawnAgent, target: 1, maxIdeas: 1 }).start();
+  await until(() => spawned.length === 1);
+  const a = spawned[0];
+  board.joinQueue({ token: a.agent.token, idea: 'A first idea for the statement.' });
+  board.peekTurn(a.agent.token);
+  board.claimCard({ token: a.agent.token, title: 'First idea', approach: 'Try the first idea carefully and in detail.' });
+  a.exit({ code: 3221225786, error: 'exit code 3221225786' }); // Windows: the console's Ctrl+C killed the agent
+  await until(() => board.state.agents[a.agent.id].state === 'gone');
+  assert.equal(board.state.agents[a.agent.id].endReason, 'interrupted with Ctrl+C');
+  assert.equal(board.state.cards['C-1'].status, 'open');
+  assert.equal(board.state.cards['C-1'].reopens, 0, 'it does not use up a retry');
+  orch.stop();
+});
+
+test('notes about the machine can be computed for every agent', async () => {
+  const board = new Board({ goal: 'Find a proof of the statement.' });
+  const { spawned, spawnAgent } = manualRunner();
+  const orch = new Orchestrator({ board, spawnAgent, target: 1, notes: () => [`${board.state.orchestrator.target} agents share this machine.`] }).start();
+  await until(() => spawned.length === 1);
+  assert.match(spawned[0].prompt, /YOUR ENVIRONMENT\n- 1 agents share this machine\./);
+  board.setOrchestrator({ target: 2 });
+  await until(() => spawned.length === 2);
+  assert.match(spawned[1].prompt, /- 2 agents share this machine\./);
+  orch.stop();
+});

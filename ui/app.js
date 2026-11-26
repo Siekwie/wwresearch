@@ -250,8 +250,10 @@ function renderHeader() {
     ['', Object.keys(state.findings).length, 'findings'],
     ['good', verified, 'verified proofs'],
   ];
-  if (o.costUsd > 0) stats.push(['', `$${o.costUsd.toFixed(2)}`, 'spent']);
-  $('#stats').innerHTML = stats.map(([cls, n, label]) => `<div class="stat ${cls}"><b>${n}</b><span>${label}</span></div>`).join('');
+  // Agents that were stopped in the middle of their first turn never reported a cost: the sum is a lower bound then.
+  if (o.costUsd > 0)
+    stats.push(['', `$${o.costUsd.toFixed(2)}${o.uncosted ? '+' : ''}`, 'spent', o.uncosted ? `At least this much. ${plural(o.uncosted, 'agent')} ${o.uncosted === 1 ? 'was' : 'were'} stopped before reporting a cost and ${o.uncosted === 1 ? 'is' : 'are'} not included.` : '']);
+  $('#stats').innerHTML = stats.map(([cls, n, label, title]) => `<div class="stat ${cls}"${title ? ` title="${esc(title)}"` : ''}><b>${n}</b><span>${label}</span></div>`).join('');
 
   const controls = [];
   const fin = state.project.finished;
@@ -536,7 +538,10 @@ async function renderDrawer() {
     let dock = '';
     if (d.status === 'open') {
       const prompt = await (await fetch(`/api/prompt?role=card&card=${encodeURIComponent(d.id)}`)).text();
-      dock = `<div class="block"><h2>Waiting for an agent</h2><p>With an orchestrator running, a fresh agent is spawned into this card automatically. To dock one by hand, give an agent this prompt:</p>${copyBox(prompt)}</div>`;
+      dock = `<div class="block"><h2>Waiting for an agent</h2><p>With an orchestrator running, a fresh agent is spawned into this card as soon as one of your agent slots is free. To dock one by hand, give an agent this prompt:</p>${copyBox(prompt)}</div>`;
+    } else if (d.status === 'abandoned') {
+      const stuck = d.kind === 'review' ? ` The proof on ${cardLink(d.parentId)} stays unreviewed until someone finishes this.` : '';
+      dock = `<div class="block"><h2>Abandoned</h2><p>${d.reopens ? `${d.reopens + 1} agents in a row` : 'Its agent'} left this card without closing it, so the board stopped handing it on.${stuck} The notes, findings and files are still here.</p><p><button class="btn primary" data-act="reopen" data-id="${esc(d.id)}">Hand it to a fresh agent</button></p></div>`;
     }
     html = `${top(`<span class="id">${esc(d.id)}</span><span class="badge">${esc(b)}</span>`)}
       <h1>${esc(d.title)}</h1>
@@ -644,7 +649,8 @@ document.addEventListener('click', (ev) => {
         : `Mark the goal as finished?${o.live ? `\n\n${plural(o.live, 'running agent')} and everything they started will be stopped.` : ''}`;
       if (!confirm(msg)) return;
       fetch('/api/finished', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ finished: !fin }) });
-    } else if (act === 'resume') setOrchestrator({ paused: false });
+    } else if (act === 'reopen') fetch(`/api/cards/${encodeURIComponent(ev.target.closest('[data-id]').dataset.id)}/reopen`, { method: 'POST' });
+    else if (act === 'resume') setOrchestrator({ paused: false });
     else if (act === 'more-ideas') setOrchestrator({ maxIdeas: o.maxIdeas + Math.max(o.target, 4) * 2 });
     else if (act === 'dock') openDock();
     else if (act === 'close-dock') $('#dock').close();

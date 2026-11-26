@@ -35,8 +35,11 @@ export function statusLabel(c) {
 }
 
 function cardLines(c) {
-  const head = `${c.id} [${statusLabel(c)}] ${c.title} — ${c.approach}`;
-  return c.takeaway ? `${head}\n    ↳ ${c.takeaway}` : head;
+  const lines = [`${c.id} [${statusLabel(c)}] ${c.title} — ${c.approach}`];
+  if (c.takeaway) lines.push(`    ↳ ${c.takeaway}`);
+  if (c.salvageable) lines.push(`    ↳ may still work: ${c.salvageable}`);
+  if (c.openNextStep) lines.push(`    ↳ next step nobody has taken: ${c.openNextStep}`);
+  return lines.join('\n');
 }
 
 function boardBlock(board, maxCards = 150) {
@@ -65,7 +68,7 @@ function boardBlock(board, maxCards = 150) {
 
 export function renderTurn(res) {
   const out = [
-    `YOUR TURN — you hold the board for the next ${res.secondsLeft}s. Nobody else can claim a card until you do.`,
+    `YOUR TURN — the board is yours for the next ${res.secondsLeft}s; nobody else can claim a card until you do. That is enough time to choose well, and what you claim now is what you will work on for hours.`,
     '',
     `Your queued idea: "${short(res.idea, 300)}"`,
     '',
@@ -80,7 +83,8 @@ export function renderTurn(res) {
   out.push(
     'NOW DO EXACTLY ONE OF',
     '- Your idea is not on the board → claim_card(title, approach).',
-    '- Your idea is already there → think of a different approach that is NOT on the board (dead ends and findings above are raw material), then claim_card(title, approach, pivoted_from: "<id of the card that already has your idea>").',
+    '- Your idea is already there, in substance → do not take the first alternative that comes to mind. Think of two or three approaches that are NOT on the board and claim the one most likely to get to the goal: claim_card(title, approach, pivoted_from: "<id of the card that already has your idea>", builds_on: [<ids you start from>]).',
+    '  Good starting points: a "may still work" line of a dead end, an obstruction someone found and a way around it, a finding nobody has used yet, what is STILL MISSING. read_card(id) shows a card in full if a line is not enough; there is time for that.',
     '- You have nothing new to add → pass_turn.',
   );
   return out.join('\n');
@@ -118,6 +122,8 @@ If your environment stopped you (a command was denied, a tool is missing) and yo
 export function renderClaimed(res) {
   return [
     `CLAIMED — ${res.card.id} "${res.card.title}" is yours. The queue has moved on; your research now runs in parallel with everyone else's.`,
+    '',
+    'START HERE: before you invest hours, take a few minutes to find out whether this exact approach is already known, solved or refuted. Search the web (your knowledge has a cutoff) and the board (search_knowledge), and put what you find into your first note.',
     '',
     WORK_RULES,
   ].join('\n');

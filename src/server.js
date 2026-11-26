@@ -124,6 +124,11 @@ export function createServer({ board, mcp, host = '127.0.0.1', port = 4777 }) {
       }
       return send(res, 200, board.cardDetail(id));
     }
+    if (p.startsWith('/api/cards/') && p.endsWith('/reopen') && req.method === 'POST') {
+      // The user hands an abandoned card to a fresh agent after all.
+      const card = board.reopenCard(decodeURIComponent(p.slice('/api/cards/'.length, -'/reopen'.length)));
+      return send(res, 200, { ok: true, cardId: card.id, status: card.status });
+    }
     if (p === '/api/report.md' && req.method === 'GET') return send(res, 200, fullReport(board), { 'content-type': 'text/markdown; charset=utf-8' });
     if (p === '/api/result.md' && req.method === 'GET') return send(res, 200, resultReport(board), { 'content-type': 'text/markdown; charset=utf-8' });
     if (p === '/api/finished' && req.method === 'POST') {

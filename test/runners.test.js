@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { processRunner } from '../src/runners.js';
+import { processRunner, winArg } from '../src/runners.js';
 
 // A fake agent that starts a long-running background process (like an agent's
 // `nohup ./search &`), records its pid, and then either exits or keeps running.
@@ -69,6 +69,62 @@ test('output from the agent process is reported as activity', { timeout: 40000 }
   await handle.exited;
   assert.ok(beats >= 1, 'printing something counts as being alive');
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// A stand-in for Claude Code: records its arguments, starts a "background job",
+// ends its turn (a result line with the cost so far) and then waits in silence
+// for the job, as a headless agent does. Later the job ends and so does the agent.
+const FAKE_CLAUDE = `
+const fs = require('node:fs');
+const say = (m) => console.log(JSON.stringify(m));
+fs.writeFileSync(process.env.WWR_WORKSPACE + '/argv.json', JSON.stringify(process.argv.slice(2)));
+say({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'b1', task_type: 'local_bash' }] });
+say({ type: 'result', subtype: 'success', total_cost_usd: 0.5, result: 'Waiting for the search to finish.' });
+setTimeout(() => {
+  say({ type: 'system', subtype: 'background_tasks_changed', tasks: [] });
+  say({ type: 'result', subtype: 'success', total_cost_usd: 0.75, result: 'Done.' });
+}, 900);
+`;
+
+test('winArg quotes only what cmd.exe would split or act on', () => {
+  assert.equal(winArg('--mcp-config'), '--mcp-config');
+  assert.equal(winArg('mcp__wwresearch,Read,Bash(python3:*)'), 'mcp__wwresearch,Read,Bash(python3:*)');
+  assert.equal(winArg('C:\\Users\\Jane Doe\\board\\mcp.json'), '"C:\\Users\\Jane Doe\\board\\mcp.json"');
+  assert.equal(winArg('Read,Bash(git status:*)'), '"Read,Bash(git status:*)"');
+  assert.equal(winArg('a&b'), '"a&b"');
+});
+
+test('Claude Code runner: paths with spaces arrive whole, cost is reported per turn, waiting on a background job counts as alive', { timeout: 40000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wwr runner with spaces-'));
+  const bin = path.join(dir, 'bin');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'fake.cjs'), FAKE_CLAUDE);
+  if (process.platform === 'win32') fs.writeFileSync(path.join(bin, 'claude.cmd'), `@"${process.execPath}" "%~dp0fake.cjs" %*\r\n`);
+  else fs.writeFileSync(path.join(bin, 'claude'), `#!/bin/sh\nexec "${process.execPath}" "$(dirname "$0")/fake.cjs" "$@"\n`, { mode: 0o755 });
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${oldPath}`;
+  try {
+    const spawnAgent = processRunner({ dir, cwd: dir, mcpUrl: 'http://127.0.0.1:1/mcp', allow: ['Bash(git status:*)'], waitBeatMs: 40 });
+    const workspace = path.join(dir, 'ws');
+    const costs = [];
+    const beats = [];
+    const handle = spawnAgent({ agent: { id: 'A-1', name: 'fake', token: 'wwr_x' }, role: 'researcher', card: null, prompt: 'hi', workspace, onActivity: () => beats.push(Date.now()), onCost: (c) => costs.push(c) });
+    const res = await handle.exited;
+    assert.equal(res.error, undefined, `the fake agent failed: ${res.error}`);
+
+    const argv = JSON.parse(fs.readFileSync(path.join(workspace, 'argv.json'), 'utf8'));
+    assert.equal(argv[argv.indexOf('--mcp-config') + 1], path.join(dir, 'mcp.json'), 'a path with spaces is one argument');
+    assert.match(argv[argv.indexOf('--allowedTools') + 1], /,Bash\(git status:\*\)$/, 'an --allow rule with a space is not cut in two');
+
+    assert.deepEqual(costs, [0.5, 0.75], 'every turn reports the cost of the session so far');
+    assert.equal(res.costUsd, 0.75);
+    // The agent printed twice, 900 ms apart, and nothing in between.
+    const quiet = beats.filter((t) => t > beats[0] + 150 && t < beats[0] + 750);
+    assert.ok(quiet.length >= 3, `expected sign-of-life reports while the background job ran, got ${quiet.length}`);
+  } finally {
+    process.env.PATH = oldPath;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('killing an agent kills everything it started', { timeout: 40000 }, async () => {

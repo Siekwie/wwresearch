@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { spawn } from 'node:child_process';
@@ -258,20 +259,30 @@ async function cmdRun(flags, positional) {
   if (!['auto', 'full', 'safe'].includes(permissions)) die('--permissions must be auto, full or safe');
   const cwd = process.cwd();
 
-  // What every agent is told about the machine it runs on.
-  const notes = [];
-  if (!flags.agentCmd) {
-    notes.push(
-      permissions === 'safe'
-        ? `You can use the board, read and write files, and use the web. Shell commands are restricted${flags.allow.length ? ` to: ${flags.allow.join(', ')}` : ' — if you needed to run code and could not, say so plainly'}.`
-        : 'You have a shell, file access and the web. Run real computations instead of reasoning about what code would do.',
+  // What every agent is told about the machine it runs on. Asked again for
+  // every agent, because the number of agents can change while the board runs.
+  const cores = os.availableParallelism?.() ?? os.cpus().length;
+  const notes = () => {
+    const out = [];
+    if (!flags.agentCmd) {
+      out.push(
+        permissions === 'safe'
+          ? `You can use the board, read and write files, and use the web. Shell commands are restricted${flags.allow.length ? ` to: ${flags.allow.join(', ')}` : ' — if you needed to run code and could not, say so plainly'}.`
+          : 'You have a shell, file access and the web. Run real computations instead of reasoning about what code would do.',
+      );
+    }
+    if (process.platform === 'win32') out.push('This machine runs Windows and your shell is Git Bash. If `python3` is missing or opens the Microsoft Store, use `python` or `py` instead.');
+    const sharing = Math.max(1, board.state.orchestrator.target);
+    out.push(
+      `This machine has ${cores} CPU threads${sharing > 1 ? `, and about ${sharing} agents compute on it at the same time. Plan a long computation for about ${Math.max(1, Math.floor(cores / sharing))} of them: a job that takes every core makes everyone slower, itself included` : ''}.`,
     );
-  }
-  if (process.platform === 'win32') notes.push('This machine runs Windows and your shell is Git Bash. If `python3` is missing or opens the Microsoft Store, use `python` or `py` instead.');
-  notes.push(
-    `Long computations are fine: you are only stopped ${timeoutMin > 0 ? `after ${timeoutMin >= 120 ? `${Math.round(timeoutMin / 60)} hours` : `${timeoutMin} minutes`} in total, or ` : ''}when neither you nor your process has shown any sign of life for ${board.config.cardLeaseMinutes} minutes (waiting on a shell command counts as alive). When you are stopped, everything you started stops too, so write checkpoints and note on the card how to resume a long run.`,
-  );
-  notes.push(`The working directory ${cwd} is shared with other agents. Do not modify or delete files you did not create, and change nothing outside it.`);
+    out.push(
+      `Long computations are fine: you are only stopped ${timeoutMin > 0 ? `after ${timeoutMin >= 120 ? `${Math.round(timeoutMin / 60)} hours` : `${timeoutMin} minutes`} in total, or ` : ''}when neither you nor your process has shown any sign of life for ${board.config.cardLeaseMinutes} minutes (waiting on a shell command or on a job you started in the background counts as alive). When you are stopped, everything you started stops too, so write checkpoints and note on the card how to resume a long run.`,
+    );
+    out.push('Other agents run their own programs on this machine, often with the same names as yours (python, the same solver). Stop only what you started, by its process id. Never stop processes by name (taskkill /IM, pkill, killall, Stop-Process -Name): that kills their work too.');
+    out.push(`The working directory ${cwd} is shared with other agents. Do not modify or delete files you did not create, and change nothing outside it.`);
+    return out;
+  };
 
   const spawnAgent = processRunner({
     dir,
@@ -318,7 +329,8 @@ async function cmdRun(flags, positional) {
   });
   orchestrator.on('idle', () => {
     const s = board.digest().counts;
-    console.log(`\n  ${c.bold('All agents are done.')} ${s.ideas} approaches · ${s.verified} verified · ${s.derivations} partial results · ${s.deadEnds} dead ends`);
+    const open = board.openCards().length;
+    console.log(`\n  ${c.bold('All agents are done.')} ${s.ideas} approaches · ${s.verified} verified · ${s.derivations} partial results · ${s.deadEnds} dead ends${open ? c.yellow(` · ${open} card${open === 1 ? '' : 's'} still waiting for an agent`) : ''}`);
     console.log(`  ${c.dim('The board stays up. Raise the agent count in the UI to continue, or press Ctrl+C. Export with: wwresearch report')}\n`);
   });
   lifecycle({ board, srv, orchestrator });

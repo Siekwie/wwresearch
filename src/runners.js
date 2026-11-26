@@ -19,10 +19,14 @@ const JOB_WRAPPER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'job
  * on Windows inside a Job Object (see jobwrap.ps1), elsewhere as its own
  * process group. Either way at lower CPU priority, so the desktop stays usable.
  */
+/** One argument for a cmd.exe command line: quoted when it holds a space or a character cmd would act on. */
+export const winArg = (arg) => (/[\s"&|<>^]/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg);
+
 function spawnTree({ command, file, args = [] }, { cwd, env }) {
   if (WINDOWS) {
-    // cmd.exe runs it, exactly as `spawn(file, args, { shell: true })` would.
-    const commandLine = command ?? [file, ...args].join(' ');
+    // cmd.exe runs it. Arguments are quoted here, because a board directory or
+    // an --allow rule with a space in it would otherwise fall apart into two.
+    const commandLine = command ?? [file, ...args].map(winArg).join(' ');
     const ps = ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', JOB_WRAPPER];
     return spawn('powershell.exe', ps, { cwd, env: { ...env, WWR_JOB_CMD: commandLine }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   }
@@ -72,8 +76,9 @@ export const SAFE_TOOLS = [`mcp__${SERVER_NAME}`, 'Read', 'Glob', 'Grep', 'Write
  *   safe: board, files and web only; shell commands only as listed in `allow`
  * @param {number} [opts.maxBudgetUsd] per-agent spending cap passed to Claude Code
  * @param {string[]} [opts.extraArgs]  extra arguments appended to the Claude Code command
+ * @param {number} [opts.waitBeatMs]   how often an agent that waits on background jobs is reported as alive
  */
-export function processRunner({ dir, cwd, mcpUrl, command = null, model = null, allow = [], permissions = 'auto', maxBudgetUsd = 0, extraArgs = [] }) {
+export function processRunner({ dir, cwd, mcpUrl, command = null, model = null, allow = [], permissions = 'auto', maxBudgetUsd = 0, extraArgs = [], waitBeatMs = 30_000 }) {
   const logDir = path.join(dir, 'logs');
   const promptDir = path.join(dir, 'prompts');
   fs.mkdirSync(logDir, { recursive: true });
@@ -81,7 +86,7 @@ export function processRunner({ dir, cwd, mcpUrl, command = null, model = null, 
   const mcpConfig = path.join(dir, 'mcp.json');
   fs.writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { [SERVER_NAME]: { type: 'http', url: mcpUrl } } }, null, 2));
 
-  return function spawnAgent({ agent, role, card, prompt, workspace, onActivity = () => {} }) {
+  return function spawnAgent({ agent, role, card, prompt, workspace, onActivity = () => {}, onCost = () => {} }) {
     const promptFile = path.join(promptDir, `${agent.id}.md`);
     fs.writeFileSync(promptFile, prompt);
     if (workspace) fs.mkdirSync(workspace, { recursive: true });
@@ -115,21 +120,32 @@ export function processRunner({ dir, cwd, mcpUrl, command = null, model = null, 
     let costUsd = 0;
     let buffer = '';
     let stderrTail = '';
+    let backgroundJobs = 0;
+    // An agent that started a job in the background and ended its turn to wait
+    // for it prints nothing until the job is done — for hours, on a long search.
+    // Claude Code says which background jobs are running; while there are any,
+    // the agent is waiting, not dead.
+    const waitBeat = setInterval(() => backgroundJobs > 0 && onActivity(), waitBeatMs);
+    waitBeat.unref?.();
     child.stdout.on('data', (chunk) => {
       log.write(chunk);
       // Any output means the process is alive. Claude Code prints a heartbeat
-      // every 30 s while a long shell command runs, so this also covers an agent
-      // that is waiting on a search.
+      // every 30 s while a shell command runs in the foreground.
       onActivity();
-      // Claude Code's stream-json ends with a "result" line that carries the cost.
       buffer += chunk.toString('utf8');
       const lines = buffer.split('\n');
       buffer = lines.pop();
       for (const line of lines) {
-        if (!line.includes('"result"')) continue;
+        if (!line.includes('"result"') && !line.includes('"background_tasks_changed"')) continue;
         try {
           const msg = JSON.parse(line);
-          if (msg.type === 'result' && typeof msg.total_cost_usd === 'number') costUsd = msg.total_cost_usd;
+          // Every turn ends with a "result" line that carries the cost of the
+          // session so far. Passing it on right away keeps the total right when
+          // the agent is stopped later, in the middle of a turn.
+          if (msg.type === 'result' && typeof msg.total_cost_usd === 'number') {
+            costUsd = msg.total_cost_usd;
+            onCost(costUsd);
+          } else if (msg.type === 'system' && msg.subtype === 'background_tasks_changed' && Array.isArray(msg.tasks)) backgroundJobs = msg.tasks.length;
         } catch {
           /* not JSON — a custom agent's own output */
         }
@@ -148,6 +164,7 @@ export function processRunner({ dir, cwd, mcpUrl, command = null, model = null, 
       const finish = (code, spawnError) => {
         if (settled) return;
         settled = true;
+        clearInterval(waitBeat);
         log.end();
         const failed = spawnError || (code !== 0 && code !== null);
         resolve({ code, costUsd, error: failed ? spawnError ?? (stderrTail.trim().split('\n').pop() || `exit code ${code}`) : undefined });

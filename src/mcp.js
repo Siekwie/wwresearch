@@ -90,7 +90,7 @@ export function createTools(board) {
 
   add(
     'enter_card',
-    'For agents that were sent directly into an existing card (a follow-up or a proof review) — these skip the queue. Returns your briefing. Call it with the token from your instructions; without a token it assigns you the next open card (or the one named by card_id).',
+    'For agents that were sent directly into an existing card (a follow-up, a card whose agent was interrupted, a proof review or a result check) — these skip the queue. Returns your briefing. Call it with the token from your instructions; without a token it assigns you the next open card (or the one named by card_id).',
     { token: { type: 'string', description: 'The token from your instructions, if you were given one.' }, card_id: { type: 'string', description: 'Optional: a specific open card, e.g. "C-12".' } },
     [],
     async ({ token, card_id }) => {

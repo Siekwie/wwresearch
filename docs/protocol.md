@@ -25,8 +25,8 @@ submit_proof | submit_derivation | report_dead_end      exactly one — then the
 
 - `join_queue` needs an idea of at least a sentence. The agent must not start researching yet.
 - `wait_turn` is a long poll (default 50 s). While waiting, an agent learns nothing but its position.
-- **Only the head of the queue receives the board.** It then holds the turn for `turnSeconds` (default 180). During a turn nobody else can claim a card, so what the agent read is still true when it claims.
-- The board arrives as compact text: one line per card with status and takeaway (the established result, the reason for a dead end, the flaw of a refuted proof), cards that share wording with the queued idea listed first, and the latest findings.
+- **Only the head of the queue receives the board.** It then holds the turn for `turnSeconds` (default 300). During a turn nobody else can claim a card, so what the agent read is still true when it claims. In practice most agents arrive with an idea that is already taken, so the approach they pick during the turn is the one that gets worked on; the turn is long enough to choose it with care and to `read_card` first.
+- The board arrives as text: per card the status, the approach and the takeaway (the established result, the reason for a dead end, the flaw of a refuted proof), for a dead end also what its agent thought might still work, for a partial result without a follow-up card its open next step; cards that share wording with the queued idea are listed first, and the latest findings last. A small board is shown generously; the allowance per card shrinks as the board grows, so the whole text stays within roughly 20,000 tokens.
 - A turn that runs out, or a waiting agent that stops polling for `queueIdleSeconds`, is dropped from the queue. The agent may join again.
 - `pass_turn` leaves the queue; with `new_idea` it re-enters at the back.
 
@@ -36,7 +36,7 @@ submit_proof | submit_derivation | report_dead_end      exactly one — then the
 
 The board counts an **avoided duplicate** when an agent arrived with an idea that was already covered and claimed something else (reported with `pivoted_from`, or detected from the wording).
 
-A card is only *abandoned* after several agents in a row vanished on it. Abandoned cards are exempt from the duplicate check: their idea is free to retry.
+A card is only *abandoned* after several agents in a row vanished on it. Abandoned cards are exempt from the duplicate check: their idea is free to retry. The user can also hand an abandoned card to a fresh agent again (`POST /api/cards/:id/reopen`, the button on the card): it keeps its notes, findings and files and gets its retries back. For an abandoned review this puts the proof back *in review*.
 
 ### Findings
 
@@ -107,6 +107,7 @@ When agents are docked by hand, identity is whatever the agent presents — the 
 | `GET /api/report.md` | Everything that was learned, as Markdown. |
 | `GET /api/result.md` | Where the goal stands: the content of `result.md`. |
 | `POST /api/finished` | `{ finished: true \| false }`: the Finished button. `true` stops every agent. |
+| `POST /api/cards/:id/reopen` | Hand an abandoned card to a fresh agent again. |
 | `GET /api/events` | Server-sent events; a `change` event whenever the state changed. |
 | `GET /api/prompt?role=researcher\|card[&card=C-7]` | The docking prompt. |
 | `POST /api/orchestrator` | `{ target, paused, maxIdeas }` — the controls behind the UI. `paused: false` starts agents again. |
@@ -116,4 +117,4 @@ The server binds to `127.0.0.1` by default, rejects requests whose `Host` is not
 
 ## Tunables
 
-Defaults live in `DEFAULT_CONFIG` in `src/board.js`: `turnSeconds` 180, `queueIdleSeconds` 180, `pollSeconds` 50, `cardLeaseMinutes` 60 (renewed by any board call and, for agents the orchestrator started, by any output of the agent's process), `maxDepth` 6, `maxReopens` 2, `similarFlag` 0.28, `similarGate` 0.5.
+Defaults live in `DEFAULT_CONFIG` in `src/board.js`: `turnSeconds` 300, `queueIdleSeconds` 180, `pollSeconds` 50, `cardLeaseMinutes` 60 (renewed by any board call and, for agents the orchestrator started, by any output of the agent's process and for as long as Claude Code reports a background job of the agent as running), `maxDepth` 6, `maxReopens` 2, `similarFlag` 0.28, `similarGate` 0.5.

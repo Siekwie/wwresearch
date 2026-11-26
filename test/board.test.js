@@ -447,3 +447,70 @@ test('finished=true marks the goal as reached; no more checks open; the user can
   board.setFinished(true);
   assert.equal(seen.length, n, 'marking it twice changes nothing');
 });
+
+test('the board shows why a dead end failed and what it left open; a large board is shown more briefly', async () => {
+  const { renderTurn } = await import('../src/render.js');
+  const { board } = setup();
+  const why = `The parity argument breaks at step three. ${'It needs the fraction in lowest terms, which the construction does not keep. '.repeat(6)}`.trim();
+  const dead = claim(board, ...PARITY);
+  board.reportDeadEnd({ token: dead.token, why_it_fails: why, salvageable: 'Running the same argument modulo four keeps the lowest-terms property.' });
+  const capped = claim(board, 'Continued fractions', 'Use the periodic continued fraction expansion of the square root of two.');
+  const next = board.joinQueue({ idea: 'Use unique prime factorization of both sides.' });
+  let turn = board.peekTurn(next.agent.token);
+  const line = turn.board.cards.find((c) => c.id === dead.card.id);
+  assert.ok(line.takeaway.length > 400, 'on a small board the reason is not cut down to a headline');
+  assert.match(line.salvageable, /modulo four/);
+  assert.match(renderTurn(turn), /↳ may still work: Running the same argument modulo four/);
+  assert.match(renderTurn(turn), /what you claim now is what you will work on for hours/);
+  board.passTurn({ token: next.agent.token });
+
+  // a partial result at the end of a chain: nobody was sent on, so its next step is open to anyone
+  board.config.maxDepth = 0;
+  board.submitDerivation({ token: capped.token, established: 'The expansion is periodic with period one.', next_step: 'Show that a periodic expansion cannot belong to a rational number.' });
+  const again = board.joinQueue({ idea: 'Use the rational root theorem on x squared minus two.' });
+  turn = board.peekTurn(again.agent.token);
+  assert.match(renderTurn(turn), /↳ next step nobody has taken: Show that a periodic expansion/);
+  board.passTurn({ token: again.agent.token });
+
+  // 120 cards: each gets the short form again, so the whole board stays readable in one go
+  for (let i = 0; i < 120; i++) claim(board, `Variant ${i} of descent`, `Descent variant number ${i}: ${'build a smaller solution from a given one and repeat. '.repeat(12)}`, { different_because: 'A different variant.' });
+  const last = board.joinQueue({ idea: 'Something else entirely, with a geometric construction.' });
+  turn = board.peekTurn(last.agent.token);
+  assert.ok(turn.board.cards.every((c) => c.approach.length <= 240));
+  assert.equal(turn.board.cards.find((c) => c.id === dead.card.id).salvageable, null);
+  assert.ok(renderTurn(turn).length < 90_000, `the rendered board has ${renderTurn(turn).length} characters`);
+});
+
+test('an abandoned card can be handed on again by the user; an abandoned review puts the proof back in review', () => {
+  const { board } = setup({ maxReopens: 0 });
+  const author = claim(board, ...PARITY);
+  const { card: proofCard, review } = board.submitProof({ token: author.token, ...PROOF });
+  assert.throws(() => board.reopenCard(review.id), (e) => e instanceof BoardError && e.code === 'unavailable', 'only abandoned cards');
+  const reviewer = board.enterCard({ card_id: review.id });
+  board.note({ token: reviewer.agent.token, text: 'Half of the cases are checked; rerun check.py to continue.' });
+  board.agentGone(reviewer.agent.id, 'no activity for 60 minutes');
+  assert.equal(review.status, 'abandoned');
+  assert.equal(proofCard.proofStatus, 'unreviewed');
+
+  const reopened = board.reopenCard(review.id.toLowerCase());
+  assert.equal(reopened.status, 'open');
+  assert.equal(reopened.reopens, 0, 'it gets its retries back');
+  assert.equal(proofCard.proofStatus, 'in_review');
+  const second = board.enterCard({ card_id: review.id });
+  assert.ok(second.briefing.previousNotes.some((n) => /rerun check\.py/.test(n.text)), 'the next reviewer continues from the notes');
+  board.submitReview({ token: second.agent.token, verdict: 'verified', ...REVIEW });
+  assert.equal(proofCard.proofStatus, 'verified');
+  assert.throws(() => board.reopenCard('C-99'), (e) => e instanceof BoardError && e.code === 'not_found');
+});
+
+test('a board saved by an older version gets the fields added since', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wwr-old-'));
+  const board = new Board({ dir, goal: GOAL });
+  delete board.state.orchestrator.uncosted;
+  board.flush();
+  const loaded = new Board({ dir });
+  assert.equal(loaded.state.orchestrator.uncosted, 0);
+  assert.equal(loaded.setOrchestrator({ uncosted: 2 }).uncosted, 2);
+  clearTimeout(loaded.saveTimer);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

@@ -1,6 +1,6 @@
 {
   "name": "wwresearch",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "WorldWideResearch — a shared research board that makes parallel AI agents explore different ideas instead of the same one.",
   "type": "module",
   "bin": {

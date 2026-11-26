@@ -196,6 +196,25 @@ test('the Finished button marks the goal and result.md reflects it', async () =>
   assert.equal(board.state.project.finished, null);
 });
 
+test('an abandoned card is reopened from the UI', async () => {
+  const b = new Board({ goal: 'Find a small sorting network for 16 inputs.', config: { maxReopens: 0 } });
+  const s = createServer({ board: b, mcp: createMcp(b), port: 0 });
+  const { url } = await s.listen();
+  const { agent } = b.joinQueue({ idea: 'Simulated annealing over comparator lists.' });
+  b.peekTurn(agent.token);
+  b.claimCard({ token: agent.token, title: 'Annealing', approach: 'Simulated annealing over fixed-length comparator lists.' });
+  b.agentGone(agent.id, 'no activity for 60 minutes');
+  assert.equal(b.state.cards['C-1'].status, 'abandoned');
+
+  const post = (id) => fetch(`${url}/api/cards/${id}/reopen`, { method: 'POST' });
+  const res = await post('C-1');
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true, cardId: 'C-1', status: 'open' });
+  assert.equal((await post('C-1')).status, 409, 'a card that is not abandoned is left alone');
+  assert.equal((await post('C-9')).status, 404);
+  await s.close();
+});
+
 test('requests from other sites and rebinding hosts are refused', async () => {
   const port = new URL(base).port;
   const status = (headers, method = 'GET', path = '/api/state') =>

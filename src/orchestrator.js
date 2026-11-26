@@ -5,12 +5,23 @@
 //      agent directly into that card — no queue; when the goal is marked as
 //      reached, stop every agent
 //
+// The value the user set is a cap for both: cards wait for a free slot.
+//
 // It never reads research, never judges ideas, never talks to agents.
 
 import { EventEmitter } from 'node:events';
 import { researcherPrompt, cardPrompt, pickLens } from './prompts.js';
 
 const CLOSING = new Set(['proof_submitted', 'derivation_submitted', 'dead_end', 'review_submitted', 'result_submitted']);
+
+// Exit code of a Windows process that was ended by Ctrl+C (STATUS_CONTROL_C_EXIT,
+// as Node reports it and as a signed number). Agents share the board's console,
+// so Ctrl+C reaches them directly, often before the board itself hears of it.
+const INTERRUPTED = new Set([3221225786, -1073741510]);
+
+// Which open card gets the next free slot: a result check can end the run and
+// a review settles a proof, so they go before cards that continue research.
+const CARD_ORDER = { check: 0, review: 1 };
 
 export class Orchestrator extends EventEmitter {
   /**
@@ -23,6 +34,8 @@ export class Orchestrator extends EventEmitter {
    * @param {number} [opts.agentTimeoutMs] kill agents that run longer than this (0 = never)
    * @param {number} [opts.heartbeatMs]    pass agent output on to the board at most this often
    * @param {(agent: object) => string|null} [opts.workspaceFor]
+   * @param {string[] | (() => string[])} [opts.notes] facts about the machine, shown to every agent;
+   *   a function is asked again for every agent, so it can describe the machine as it is right now
    */
   constructor({ board, spawnAgent, target, maxIdeas = 0, lenses = true, agentTimeoutMs = 0, heartbeatMs = 60_000, workspaceFor = () => null, retryDelayMs = 2000, finishGraceMs = 30_000, notes = [], stopWhenFinished = true }) {
     super();
@@ -58,6 +71,7 @@ export class Orchestrator extends EventEmitter {
           rec.graceTimer = setTimeout(() => this.#kill(rec), this.finishGraceMs);
           rec.graceTimer.unref?.();
         }
+        this.schedule(); // its slot is free for a card that is waiting
       }
     };
     this.onSettings = () => this.schedule();
@@ -85,9 +99,18 @@ export class Orchestrator extends EventEmitter {
     const o = this.board.state.orchestrator;
     if (o.paused) return;
 
-    // Job 2: every open card gets an agent, directly.
-    for (const card of this.board.openCards()) {
-      if (!card.reservedFor) this.#spawn({ review: 'reviewer', check: 'checker' }[card.kind] ?? 'followup', card);
+    // Job 2: open cards get an agent directly, and before any new researcher —
+    // but never beyond the number the user set. An agent whose card is closed
+    // is only winding down and no longer counts, so the review or follow-up it
+    // opened starts at once. After a restart many cards reopen together: they
+    // are worked off as slots free up, judging cards first, then oldest first.
+    const waiting = this.board
+      .openCards()
+      .filter((card) => !card.reservedFor)
+      .sort((a, b) => (CARD_ORDER[a.kind] ?? 2) - (CARD_ORDER[b.kind] ?? 2) || a.createdAt - b.createdAt);
+    for (const card of waiting) {
+      if (this.#working() >= o.target) break;
+      this.#spawn({ review: 'reviewer', check: 'checker' }[card.kind] ?? 'followup', card);
     }
     // Job 1: keep the pool full with researchers that go through the queue.
     while (this.live.size < o.target && (o.maxIdeas === 0 || o.ideasSpawned < o.maxIdeas)) this.#spawn('researcher', null);
@@ -99,6 +122,13 @@ export class Orchestrator extends EventEmitter {
     }
   }
 
+  /** Live agents that still have work to do: not those whose card is closed or who were released. */
+  #working() {
+    let n = 0;
+    for (const { agent } of this.live.values()) if (agent.state !== 'finished' && agent.state !== 'gone') n++;
+    return n;
+  }
+
   #spawn(role, card) {
     const { board } = this;
     const o = board.state.orchestrator;
@@ -106,7 +136,7 @@ export class Orchestrator extends EventEmitter {
     const goal = board.state.project.goal;
     const workspace = this.workspaceFor(agent);
     agent.workspace = workspace;
-    const { notes } = this;
+    const notes = typeof this.notes === 'function' ? this.notes() : this.notes;
     const prompt =
       role === 'researcher'
         ? researcherPrompt({ goal, token: agent.token, lens: this.lenses ? pickLens(this.lensOffset + o.ideasSpawned) : null, workspace, notes })
@@ -122,13 +152,14 @@ export class Orchestrator extends EventEmitter {
       board.heartbeat(agent.id);
     };
 
+    const rec = { agent, handle: null, timer: null, killed: false, costUsd: 0 };
     let handle;
     try {
-      handle = this.spawnAgent({ agent, role, card, prompt, workspace, onActivity });
+      handle = this.spawnAgent({ agent, role, card, prompt, workspace, onActivity, onCost: (total) => this.#cost(rec, total) });
     } catch (err) {
       handle = { exited: Promise.resolve({ code: -1, error: err.message }), kill() {} };
     }
-    const rec = { agent, handle, timer: null, killed: false };
+    rec.handle = handle;
     if (this.agentTimeoutMs > 0) {
       rec.timer = setTimeout(() => {
         board.agentGone(agent.id, `timed out after ${Math.round(this.agentTimeoutMs / 60000)} min`);
@@ -145,24 +176,37 @@ export class Orchestrator extends EventEmitter {
     );
   }
 
+  /** An agent reports what its session has cost so far; the board keeps the sum over all agents. */
+  #cost(rec, total) {
+    if (!(total > rec.costUsd)) return;
+    const o = this.board.state.orchestrator;
+    this.board.setOrchestrator({ costUsd: Math.round((o.costUsd + total - rec.costUsd) * 10000) / 10000 });
+    rec.costUsd = total;
+  }
+
   #exited(rec, res) {
     const { board } = this;
     const { agent } = rec;
     clearTimeout(rec.timer);
     clearTimeout(rec.graceTimer);
     this.live.delete(agent.id);
+    this.#cost(rec, res.costUsd);
     const o = board.state.orchestrator;
     const patch = { live: this.live.size };
-    if (res.costUsd > 0) patch.costUsd = Math.round((o.costUsd + res.costUsd) * 10000) / 10000;
 
     // An agent that never made a single board call did not really start
     // (command missing, not logged in, MCP not reachable). Don't burn through
     // the budget retrying blindly: back off, and stop after three in a row.
     const neverShowedUp = agent.calls === 0;
+    // Ctrl+C in the terminal: the user is stopping the run, the agent did not fail.
+    const interrupted = INTERRUPTED.has(res.code);
     let delay = 0;
     if (neverShowedUp && agent.role === 'researcher') patch.ideasSpawned = Math.max(0, o.ideasSpawned - 1);
+    // It worked on the board but was stopped before it finished a turn, so it
+    // never said what it cost: the total on the board is missing this agent.
+    if (!neverShowedUp && rec.costUsd === 0 && o.costUsd > 0) patch.uncosted = o.uncosted + 1;
     // An agent we killed ourselves did not fail to launch.
-    if (neverShowedUp && !this.stopped && !rec.killed) {
+    if (neverShowedUp && !this.stopped && !rec.killed && !interrupted) {
       this.launchFailures++;
       delay = this.retryDelayMs * this.launchFailures;
       if (this.launchFailures >= 3) {
@@ -175,7 +219,9 @@ export class Orchestrator extends EventEmitter {
     board.setOrchestrator(patch);
     // While shutting down we kill the agents ourselves. Leave their cards as they
     // are: the next start reopens them without counting it against the card.
-    if (!this.stopped) board.agentGone(agent.id, res.error ? `failed: ${res.error}` : 'process exited');
+    // The same goes for Ctrl+C: it must not use up one of the card's retries.
+    if (interrupted) board.agentGone(agent.id, 'interrupted with Ctrl+C', { restart: true });
+    else if (!this.stopped) board.agentGone(agent.id, res.error ? `failed: ${res.error}` : 'process exited');
     this.emit('exited', { agent, ...res });
     this.schedule(delay);
   }

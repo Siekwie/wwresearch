@@ -45,7 +45,7 @@ WHAT TO DO
 1. Think of ONE concrete approach to the goal. Do not start working on it yet.${lens ? `\n   A nudge to diversify (ignore it if it does not fit): ${lens}` : ''}
 2. Call join_queue with your idea in 1–3 sentences${token ? ` and token "${token}"` : ''}.
 3. Call wait_turn until it is your turn. You then receive the board.
-4. Check whether your idea is already on the board — in substance, not just in wording. If it is, come up with a different approach that is not there yet. Then call claim_card.
+4. Check whether your idea is already on the board — in substance, not just in wording. Expect that it is: most first ideas are. Then the choice you make with the board in front of you is the one that counts. Take the time you are given, build on what the others found${lens ? ' (the nudge above still applies)' : ''}, and pick an approach that is not there yet. Then call claim_card.
 5. Work on your card — this is the actual research. Use every tool you have: run code, search the web. Your knowledge has a cutoff, so check early what is already known or solved and build on it. Record progress with note and every reusable insight with add_finding (negative results too).
 6. Finish with exactly one of submit_proof, submit_derivation or report_dead_end. Be honest about which one it is: a precise dead end is a useful result, an inflated proof is not.
 7. Then stop. One agent works on exactly one card, and never verifies its own result — an independent agent does that.

@@ -46,7 +46,11 @@ It needs no intelligence, so it has none: no model, no prompt, no way to be conf
 
 Each agent is started as one stoppable unit with everything it launches — a Job Object on Windows (`src/jobwrap.ps1`), its own process group elsewhere — at below-normal priority. Whatever an agent leaves running when it exits dies with it, and **Shut down** (`POST /api/shutdown`) kills every unit at once and pauses the pool. The cards they held reopen for fresh agents without using up a retry. The same happens by itself when the goal is marked as finished, by a result checker's `finished: true` or by the user's **Finished** button. The orchestrator still judges nothing: it reacts to the `goal_finished` event.
 
-Agents spawned for open cards are started even when the pool is full. Since the agent that opened the card is about to exit, the pool returns to the target on its own.
+The target is a cap for card agents as well. What counts is the number of agents that still have work to do: an agent whose card is closed is only winding down, so the review or follow-up it opened starts at once, without waiting for its process to exit. When more cards are open than the target allows — after a restart every card that was in progress is open again, and the user may have asked for fewer agents or a costlier model this time — they wait and are worked off as slots free up: result checks first, then reviews, then research cards, oldest first. New researchers only start once no card is waiting for a slot.
+
+An agent that waits is not a dead agent. A headless Claude Code agent that starts a search in the background and ends its turn prints nothing until the job reports back, possibly hours later. The runner reads which background jobs Claude Code lists as running and keeps the card's lease alive while there are any; only an agent with no board call, no output and no running job for `cardLeaseMinutes` is released. The total timeout still bounds a job that never ends.
+
+Costs are added up as they are reported (Claude Code states the session's cost at the end of every turn), not when the process exits, so stopping a run does not lose them. Agents stopped before their first report are counted, and the UI marks the total as a lower bound.
 
 ### Independence is structural
 
@@ -85,5 +89,6 @@ The whole thing has to start from `npx github:…` in a second and be readable i
 
 - The duplicate check is lexical. Two phrasings of one idea with no shared vocabulary are only caught by the agent — which is the design, but it depends on the model.
 - "Verified" is an independent model's judgement, not a formal proof. Use the independent test.
-- The board delivers every card to the agent at the head. Beyond a few hundred cards it truncates and points to `search_knowledge`; very large boards would benefit from smarter retrieval.
+- The board delivers every card to the agent at the head, in more detail the smaller the board is. Beyond 150 cards it lists only the newest and points to `search_knowledge`; very large boards would benefit from smarter retrieval.
+- Agents share one machine. They are told how many CPU threads there are and how many agents use them, and to stop only their own processes by id — instructions, not walls.
 - One board per directory and process; there is no authentication. It is a tool for your machine or a trusted network.
