@@ -215,6 +215,8 @@ function openBoard(flags, goal) {
 
 function lifecycle({ board, srv, orchestrator }) {
   const ticker = setInterval(() => board.tick(), 2000);
+  board.on('save_error', (err) => console.error(`\n  ${c.red('could not save the board')} ${err.message}\n  ${c.dim('The board keeps running and tries again every two seconds. Until it works, a crash would lose what happened since the last save.')}\n`));
+  board.on('save_ok', () => console.log(`  ${c.green('The board is saved again.')}`));
   let closing = false;
   const shutdown = async () => {
     if (closing) process.exit(1);

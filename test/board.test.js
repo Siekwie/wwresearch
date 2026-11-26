@@ -503,6 +503,27 @@ test('an abandoned card can be handed on again by the user; an abandoned review 
   assert.throws(() => board.reopenCard('C-99'), (e) => e instanceof BoardError && e.code === 'not_found');
 });
 
+test('a save that fails does not take the board down; it is reported and tried again', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wwr-save-'));
+  const board = new Board({ dir, goal: GOAL });
+  board.flush();
+  const seen = [];
+  board.on('save_error', (err) => seen.push(err.code));
+  board.on('save_ok', () => seen.push('ok'));
+  fs.rmSync(dir, { recursive: true, force: true }); // the directory disappears under the running board
+  board.joinQueue({ idea: 'Use a parity argument on the fraction.' });
+  await new Promise((r) => setTimeout(r, 400));
+  assert.deepEqual(seen, ['ENOENT'], 'reported once, not thrown');
+  assert.equal(board.state.queue.length, 1, 'the board itself is unharmed');
+
+  fs.mkdirSync(dir, { recursive: true });
+  await new Promise((r) => setTimeout(r, 2300));
+  assert.deepEqual(seen, ['ENOENT', 'ok']);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'state.json'), 'utf8')).queue.length, 1);
+  clearTimeout(board.saveTimer);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('a board saved by an older version gets the fields added since', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wwr-old-'));
   const board = new Board({ dir, goal: GOAL });

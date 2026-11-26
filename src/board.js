@@ -101,6 +101,7 @@ export class Board extends EventEmitter {
     this.tokens = new Map();
     this.resumed = false;
     this.saveTimer = null;
+    this.saveError = null; // message of the last failed save, until one works again
 
     const file = dir && path.join(dir, 'state.json');
     if (file && fs.existsSync(file)) {
@@ -156,8 +157,28 @@ export class Board extends EventEmitter {
   #dirty() {
     this.emit('change');
     if (!this.dir || this.saveTimer) return;
-    this.saveTimer = setTimeout(() => this.flush(), 150);
+    this.saveTimer = setTimeout(() => this.#save(), 150);
     this.saveTimer.unref?.();
+  }
+
+  /**
+   * The timed save. A write that fails (the file is briefly locked by a virus
+   * scanner or another reader, the disk is full, the directory is gone) must
+   * not take the board down in the middle of a run: it is reported once as a
+   * "save_error" event and tried again until it works.
+   */
+  #save() {
+    this.saveTimer = null;
+    try {
+      this.flush();
+      if (this.saveError) this.emit('save_ok');
+      this.saveError = null;
+    } catch (err) {
+      if (this.saveError !== err.message) this.emit('save_error', err);
+      this.saveError = err.message;
+      this.saveTimer = setTimeout(() => this.#save(), 2000);
+      this.saveTimer.unref?.();
+    }
   }
 
   /** Write state.json now (atomic). */
