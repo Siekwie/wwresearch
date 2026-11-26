@@ -432,7 +432,7 @@ function renderReports() {
         <h1>Reports for you</h1>
         <p>A proof never certifies itself. Each one is checked by a fresh agent that did not write it, and that agent explains what was found, why it holds, and how you can test it without trusting any of this research.</p>
       </header>
-      ${result ? `<article class="report result ${result.finished ? 'verified' : 'inconclusive'}"><div class="report-top"><span class="badge">${result.finished ? '✓ goal reached' : 'not finished yet'}</span><span>${timeTag(result.at)} · ${esc(result.cardId)}</span><span class="spacer"></span><a href="/api/result.md" target="_blank" rel="noopener">result.md ↗</a></div>${resultHtml(result)}</article>` : ''}
+      ${result ? `<article class="report result ${result.finished && !result.outdated ? 'verified' : 'inconclusive'}"><div class="report-top"><span class="badge"${result.outdated ? ' title="You changed the goal after this result was written. A result checker compares the board with the new goal after the next verified proof."' : ''}>${result.outdated ? 'written for the earlier goal' : result.finished ? '✓ goal reached' : 'not finished yet'}</span><span>${timeTag(result.at)} · ${esc(result.cardId)}</span><span class="spacer"></span><a href="/api/result.md" target="_blank" rel="noopener">result.md ↗</a></div>${resultHtml(result)}</article>` : ''}
       ${pending.length ? `<ul class="pending">${pending.map((c) => `<li data-card="${esc(c.id)}"><span class="id">${esc(c.id)}</span><span>${esc(c.title)}</span><span class="spacer"></span><span class="badge">${c.proofStatus === 'in_review' ? 'review in progress' : 'unreviewed'}</span></li>`).join('')}</ul>` : ''}
       ${reviews.map(reportHtml).join('')}
       ${!reviews.length && !pending.length ? '<div class="none">No proof has been submitted yet.<br />When an agent believes it solved the goal, an independent agent reviews the proof and its report appears here.</div>' : ''}
@@ -483,9 +483,10 @@ function outcomeHtml(d) {
 }
 
 function resultHtml(r) {
-  return `<h2>${r.finished ? '✓ The goal is reached' : 'Not finished yet'}</h2>
-    <h4>What is established</h4><div class="prose">${prose(r.summary)}</div>
-    ${r.missing ? `<h4>${r.finished ? 'Noted as missing' : 'Still missing'}</h4><div class="prose">${prose(r.missing)}</div>` : ''}`;
+  // outdated: the goal was changed after this result was written, so it is no verdict on the goal as it reads now
+  return `<h2>${r.outdated ? 'Not checked against the new goal yet' : r.finished ? '✓ The goal is reached' : 'Not finished yet'}</h2>
+    <h4>${r.outdated ? `What was established for the earlier goal (${r.finished ? 'found reached' : 'not reached'})` : 'What is established'}</h4><div class="prose">${prose(r.summary)}</div>
+    ${r.missing ? `<h4>${r.outdated ? 'Missing for the earlier goal' : r.finished ? 'Noted as missing' : 'Still missing'}</h4><div class="prose">${prose(r.missing)}</div>` : ''}`;
 }
 
 async function renderDrawer() {

@@ -84,6 +84,17 @@ submit_result(token, finished, summary [, missing] [, based_on])
 
 `summary` lists what is established as Markdown bullet points. `missing` is required when `finished` is false; the next researchers see it at the top of the board. Every result is written to `result.md` next to the goal file (the working directory for an inline goal). `finished: true` marks the goal as reached: the orchestrator stops every agent, as with **Shut down**, and the **Finished** button in the UI lights up. The user can set or clear it with that button (`POST /api/finished`).
 
+### Changing the goal
+
+Starting the board with a goal that differs from the one it holds (usually: the goal file was edited) keeps the board and continues on the new wording. Nothing is archived or removed. What changes:
+
+- Every agent from now on is given the new goal. The board shown to researchers says up to which card the cards were written for an earlier wording, and so does the briefing of an agent that is handed such a card (a follow-up, a review, an interrupted card, a result check).
+- A verdict about the old wording is not a verdict about the new one: *finished* is cleared, and the last result is kept only as material for the next checker. Researchers are not shown its `missing`, and `result.md` says that the goal has not been checked yet.
+- If a proof was already verified, a result check opens at once, so a checker compares what is on the board with the new goal.
+- `--max-ideas` counts the ideas claimed since the change.
+
+Earlier wordings are kept in `project.goalHistory` in `state.json`. `--fresh` is the way to start with an empty board instead.
+
 ## Guarantees the board enforces
 
 | Rule | How |

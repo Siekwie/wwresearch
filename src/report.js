@@ -60,14 +60,17 @@ export function resultReport(board) {
   let status;
   if (f?.by === 'user') status = `**Finished** — marked as finished by you (${when(f.at)} UTC).`;
   else if (f) status = `**Finished** — the result checker on ${f.cardId} found the goal reached (${when(f.at)} UTC).`;
+  else if (r?.outdated)
+    status = `**Not checked against this goal yet** — you changed the goal (${when(p.goalHistory.at(-1).until)} UTC). The summary below was written on ${r.cardId} for the earlier wording.`;
   else if (r?.finished) status = `**Not finished** — you marked the goal as not finished again, although the result checker on ${r.cardId} had found it reached (${when(r.at)} UTC).`;
   else if (r) status = `**Not finished yet** — last checked on ${r.cardId} (${when(r.at)} UTC).`;
   else status = '**Not finished yet** — no result checker has run so far (one runs after every verified proof).';
 
   const out = [`# Result: ${p.title}`, '', status, ''];
   if (r) {
-    out.push('## Summary', '', r.summary, '');
-    if (r.missing && !f) out.push('## Still missing', '', r.missing, '');
+    out.push(r.outdated ? '## Summary for the earlier goal' : '## Summary', '', r.summary, '');
+    if (r.missing && r.outdated) out.push('## What was missing for the earlier goal', '', r.missing, '');
+    else if (r.missing && !f) out.push('## Still missing', '', r.missing, '');
     else if (r.missing) out.push('## What the checker said was still missing', '', r.missing, '');
   }
   const verified = work.filter((c) => c.status === 'proof' && c.proofStatus === 'verified');
@@ -87,7 +90,7 @@ export function fullReport(board) {
   const by = (fn) => work.filter(fn);
   const out = [`# Research report: ${s.project.title}`, '', '## Goal', '', s.project.goal, ''];
   if (s.project.finished || s.project.result) {
-    out.push('## Where the goal stands', '', s.project.finished ? '**Finished.**' : '**Not finished yet.**', '');
+    out.push('## Where the goal stands', '', s.project.finished ? '**Finished.**' : s.project.result?.outdated ? '**Not checked against this goal yet.** What follows was written for an earlier wording of the goal.' : '**Not finished yet.**', '');
     if (s.project.result) out.push(s.project.result.summary, '', ...(s.project.result.missing && !s.project.finished ? ['*Still missing:* ' + s.project.result.missing, ''] : []));
   }
 

@@ -115,7 +115,8 @@ export class Board extends EventEmitter {
       const g = text(goal, 'goal', { min: 8, max: 20000 });
       this.state = {
         version: 1,
-        // result: what the last checker wrote; finished: set by a checker or by the user
+        // result: what the last checker wrote; finished: set by a checker or by the user;
+        // goalHistory (added by setGoal): earlier wordings of the goal
         project: { goal: g, title: short(title || g.split('\n')[0], 120), createdAt: now(), verified: [], demo, result: null, finished: null, resultFile: null },
         config: { ...DEFAULT_CONFIG, ...config },
         orchestrator: { ...ORCHESTRATOR },
@@ -554,10 +555,14 @@ export class Board extends EventEmitter {
 
   #briefing(card) {
     const parent = this.state.cards[card.parentId];
+    // The goal was reworded after what this agent is handed was written (a checker is handed the whole board).
+    const change = this.#goalChange();
+    const written = card.kind === 'check' ? 0 : Number((parent ?? card).id.slice(2));
     // What an earlier agent on this very card left behind (the card was reopened).
     const base = {
       kind: card.kind,
       goal: this.state.project.goal,
+      goalChanged: change && written <= change.n ? { at: change.at, lastCard: change.lastCard } : null,
       parentId: parent?.id ?? null,
       title: card.title,
       approach: card.approach,
@@ -770,13 +775,57 @@ export class Board extends EventEmitter {
     if (Object.values(this.state.cards).some((c) => c.kind === 'check' && c.status === 'open')) return null;
     const check = this.#createCard({
       kind: 'check',
-      title: `Is the goal reached? (after ${proofCard.id} was verified)`,
+      title: `Is the goal reached? (after ${proofCard ? `${proofCard.id} was verified` : 'the goal was changed'})`,
       approach: 'Compare everything established so far with the goal, decide whether it is reached, and write the result for the user.',
       status: 'open',
     });
-    check.triggeredBy = proofCard.id;
+    check.triggeredBy = proofCard?.id ?? null;
     this.#event('card_opened', { cardId: check.id, kind: 'check', text: `${check.id} opened: is the goal reached now?` });
     return check;
+  }
+
+  /**
+   * The user reworded the goal and keeps the board. Every card, finding and
+   * file stays; from now on every agent is given the new wording, and is told
+   * which cards were written for an earlier one.
+   *
+   * What was decided about the old wording is no longer a verdict on the goal:
+   * "finished" is taken back, and the last result stays only as material for
+   * the next checker. If a proof was already verified, a checker is sent to
+   * compare everything with the goal as it reads now.
+   *
+   * @returns {null | {previous: string, wasFinished: boolean, check: object|null}} null if the goal is unchanged
+   */
+  setGoal(goal, { title } = {}) {
+    const p = this.state.project;
+    const g = text(goal, 'goal', { min: 8, max: 20000 });
+    if (g === p.goal) return null;
+    const previous = p.title;
+    p.goalHistory ??= [];
+    p.goalHistory.push({ goal: p.goal, title: p.title, until: this.now(), lastCard: this.state.seq.card });
+    if (p.goalHistory.length > 10) p.goalHistory.splice(0, p.goalHistory.length - 10);
+    p.goal = g;
+    p.title = short(title || g.split('\n')[0], 120);
+    const wasFinished = Boolean(p.finished);
+    p.finished = null;
+    if (p.result) p.result.outdated = true;
+    this.#event('goal_changed', {
+      text: `The goal was changed; the board continues with the new wording: ${p.title}${wasFinished ? ' (no longer marked as finished)' : ''}`,
+    });
+    const check = p.verified.length ? this.#openCheck(null) : null;
+    return { previous, wasFinished, check };
+  }
+
+  /** The last change of the goal, if cards exist that were written before it. */
+  #goalChange() {
+    const last = this.state.project.goalHistory?.at(-1);
+    return last?.lastCard ? { at: last.until, lastCard: `C-${last.lastCard}`, n: last.lastCard } : null;
+  }
+
+  /** Idea cards claimed since the goal last changed (all of them if it never did): what --max-ideas counts. */
+  ideasForGoal() {
+    const since = this.#goalChange()?.n ?? 0;
+    return Object.values(this.state.cards).filter((c) => c.kind === 'idea' && Number(c.id.slice(2)) > since).length;
   }
 
   /** A checker closes its card with the current result. finished=true marks the goal as reached. */
@@ -887,7 +936,8 @@ export class Board extends EventEmitter {
   digest() {
     const cards = Object.values(this.state.cards).filter(isWork);
     const count = (fn) => cards.filter(fn).length;
-    const scale = Math.min(1, 40 / Math.max(cards.length, 1));
+    const change = this.#goalChange();
+    const scale =Math.min(1, 40 / Math.max(cards.length, 1));
     const lim = {
       approach: Math.max(240, Math.round(520 * scale)),
       takeaway: Math.max(260, Math.round(720 * scale)),
@@ -908,8 +958,13 @@ export class Board extends EventEmitter {
         findings: Object.keys(this.state.findings).length,
       },
       cards: cards.map((c) => this.#line(c, lim)).reverse(),
-      // The last checker's verdict: researchers aim at what is still missing.
-      result: this.state.project.result ? { cardId: this.state.project.result.cardId, finished: this.state.project.result.finished, missing: short(this.state.project.result.missing, 600) || null } : null,
+      // The last checker's verdict: researchers aim at what is still missing (not if it was about an earlier wording of the goal).
+      result:
+        this.state.project.result && !this.state.project.result.outdated
+          ? { cardId: this.state.project.result.cardId, finished: this.state.project.result.finished, missing: short(this.state.project.result.missing, 600) || null }
+          : null,
+      // Cards up to lastCard were written for an earlier wording of the goal.
+      goalChanged: change ? { at: change.at, lastCard: change.lastCard } : null,
       findings: Object.values(this.state.findings)
         .filter((f) => !f.auto)
         .slice(-30)

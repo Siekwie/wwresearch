@@ -53,6 +53,10 @@ function boardBlock(board, maxCards = 150) {
     `${n.findings} findings`,
   ];
   const lines = [`BOARD · ${parts.join(' · ')}`];
+  if (board.goalChanged)
+    lines.push(
+      `THE GOAL WAS REWORDED: cards up to ${board.goalChanged.lastCard} were written for an earlier wording. Their results and dead ends are still knowledge, but check each against the goal as it reads now: a dead end may be open again, and a proof may settle something the goal no longer asks for.`,
+    );
   if (board.result && !board.result.finished && board.result.missing)
     lines.push(`STILL MISSING for the goal (checked on ${board.result.cardId}): ${board.result.missing}`);
   if (!board.cards.length) lines.push('(empty — you are the first)');
@@ -145,6 +149,14 @@ function handoverBlock(b) {
   return out;
 }
 
+/** The goal, and a warning if what the agent is handed was written for an earlier wording of it. */
+function goalBlock(b, what) {
+  const out = ['GOAL', b.goal];
+  if (b.goalChanged)
+    out.push('', `The user reworded this goal after ${what} written (cards up to ${b.goalChanged.lastCard} belong to the earlier wording). Where the two disagree, the goal as it reads here decides.`);
+  return out;
+}
+
 export function renderBriefing({ agent, card, briefing: b }, { showToken = false } = {}) {
   const out = [];
   if (showToken) out.push(`You are agent "${agent.name}". Your token: ${agent.token}`, 'Pass this token to every other tool call.', '');
@@ -153,8 +165,7 @@ export function renderBriefing({ agent, card, briefing: b }, { showToken = false
       `You are the independent reviewer on ${card.id}. It reviews the proof submitted on ${b.parentId} ("${b.authorCardTitle}").`,
       'You did not write this proof and have no stake in it. Your job is to try to break it.',
       '',
-      'GOAL',
-      b.goal,
+      ...goalBlock(b, 'this proof was'),
       '',
       'CLAIM',
       b.claim,
@@ -182,8 +193,7 @@ export function renderBriefing({ agent, card, briefing: b }, { showToken = false
       `You are the result checker on ${card.id}.${b.triggeredBy ? ` A proof on ${b.triggeredBy} was just verified by an independent reviewer.` : ''}`,
       'Your job: decide whether everything established so far reaches the GOAL, and write the result for the user. You do no new research.',
       '',
-      'GOAL',
-      b.goal,
+      ...goalBlock(b, 'the results below were'),
       '',
       'VERIFIED PROOFS (checked by an agent that did not write them)',
     );
@@ -192,7 +202,7 @@ export function renderBriefing({ agent, card, briefing: b }, { showToken = false
     if (b.unsettled.length) out.push('', 'PROOFS THAT ARE NOT VERIFIED (do not count them as established)', ...b.unsettled.map((p) => `${p.id} [${p.proofStatus}] ${p.claim}`));
     if (b.partial.length) out.push('', 'PARTIAL RESULTS', ...b.partial.map((p) => `${p.id} [${p.confidence ?? 'unrated'}] ${p.established}`));
     if (b.solidFindings.length) out.push('', 'FINDINGS RATED proven / checked / verified', ...b.solidFindings.map((f) => `${f.id} [${f.kind} · ${f.confidence} · ${f.cardId}] ${f.statement}`));
-    if (b.previousResult) out.push('', `THE PREVIOUS RESULT (${b.previousResult.cardId}, ${b.previousResult.finished ? 'finished' : 'not finished'})`, b.previousResult.summary, ...(b.previousResult.missing ? ['Missing then:', b.previousResult.missing] : []));
+    if (b.previousResult) out.push('', `THE PREVIOUS RESULT (${b.previousResult.cardId}, ${b.previousResult.finished ? 'finished' : 'not finished'}${b.previousResult.outdated ? ' — written for the EARLIER wording of the goal: use it as a list of what exists, not as a verdict' : ''})`,b.previousResult.summary, ...(b.previousResult.missing ? ['Missing then:', b.previousResult.missing] : []));
     out.push(...notesBlock(b.previousNotes, 'NOTES LEFT ON THIS CARD BY A PREVIOUS CHECKER'));
     out.push(
       '',
@@ -213,8 +223,7 @@ export function renderBriefing({ agent, card, briefing: b }, { showToken = false
     out.push(
       `You are taking over ${card.id}: "${card.title}". The agent that claimed it was interrupted before it finished; the idea and everything it left behind are yours now. You skipped the queue.`,
       '',
-      'GOAL',
-      b.goal,
+      ...goalBlock(b, 'this card was'),
       '',
       'THE APPROACH OF THIS CARD',
       b.approach,
@@ -230,8 +239,7 @@ export function renderBriefing({ agent, card, briefing: b }, { showToken = false
   out.push(
     `You are now working on ${card.id}: "${card.title}". You skipped the queue because this card continues an existing result (${b.parentId}).`,
     '',
-    'GOAL',
-    b.goal,
+    ...goalBlock(b, `${b.parentId} and the task below were`),
     '',
     `INHERITED FROM ${b.parentId} "${b.parentTitle}"`,
     `Approach: ${b.parentApproach}`,

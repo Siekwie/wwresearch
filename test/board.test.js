@@ -535,3 +535,95 @@ test('a board saved by an older version gets the fields added since', () => {
   clearTimeout(loaded.saveTimer);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+const NEW_GOAL = 'Prove that the square root of every prime number is irrational.\n\nThe case of two alone does not count as solved.';
+
+test('a changed goal keeps the board; what was decided about the old wording is no longer a verdict', async () => {
+  const { renderTurn, renderBriefing } = await import('../src/render.js');
+  const { resultReport } = await import('../src/report.js');
+  const { board } = setup();
+  const seen = [];
+  board.on('event', (ev) => seen.push(ev.type));
+  const dead = claim(board, 'Decimal digits', 'Compute a million digits and look for a repeating period in the expansion.');
+  board.reportDeadEnd({ token: dead.token, why_it_fails: 'No finite prefix can rule out a long period.' });
+  const { card: proof, check } = verifiedProof(board);
+  const first = board.enterCard({ card_id: check.id });
+  board.submitResult({ token: first.agent.token, finished: true, summary: '- C-2: the root of two is irrational (verified).', based_on: [proof.id] });
+  assert.ok(board.state.project.finished);
+  const cardsBefore = Object.keys(board.state.cards);
+  const findingsBefore = Object.keys(board.state.findings).length;
+
+  assert.equal(board.setGoal(`  ${GOAL}\n`), null, 'the same goal changes nothing');
+  assert.throws(() => board.setGoal('short'), { code: 'invalid' });
+  assert.equal(seen.includes('goal_changed'), false);
+
+  const res = board.setGoal(NEW_GOAL);
+  const p = board.state.project;
+  assert.equal(p.goal, NEW_GOAL);
+  assert.equal(p.title, 'Prove that the square root of every prime number is irrational.');
+  assert.equal(res.previous, GOAL);
+  assert.equal(res.wasFinished, true);
+  assert.equal(p.finished, null, 'finished was about the old wording');
+  assert.deepEqual(p.goalHistory.map((h) => h.goal), [GOAL], 'the old wording is kept');
+  assert.ok(seen.includes('goal_changed'));
+  assert.deepEqual(Object.keys(board.state.cards).slice(0, cardsBefore.length), cardsBefore, 'every card is still there');
+  assert.equal(Object.keys(board.state.findings).length, findingsBefore);
+  assert.equal(board.state.cards[proof.id].proofStatus, 'verified');
+  assert.equal(board.state.cards[dead.card.id].status, 'dead_end');
+
+  // the old result is material, not a verdict: researchers are not shown its "missing", result.md says so
+  assert.equal(p.result.outdated, true);
+  assert.equal(board.digest().result, null);
+  assert.match(resultReport(board), /Not checked against this goal yet/);
+  assert.match(resultReport(board), /every prime number/);
+
+  // a verified proof exists, so a checker compares the board with the new goal
+  assert.equal(res.check.kind, 'check');
+  assert.equal(res.check.status, 'open');
+  assert.equal(res.check.triggeredBy, null);
+  const second = board.enterCard({ card_id: res.check.id });
+  assert.equal(second.briefing.goal, NEW_GOAL);
+  assert.deepEqual(second.briefing.verified.map((v) => v.id), [proof.id]);
+  const brief = renderBriefing(second);
+  assert.match(brief, /The user reworded this goal/);
+  assert.match(brief, /written for the EARLIER wording/);
+  board.submitResult({ token: second.agent.token, finished: false, summary: '- C-2 settles the prime two only.', missing: 'The odd primes are not covered by anything on the board.' });
+  assert.equal(board.state.project.result.outdated, undefined);
+  assert.match(board.digest().result.missing, /odd primes/);
+  assert.match(resultReport(board), /Not finished yet/);
+
+  // researchers are told which cards belong to the earlier wording
+  const last = res.check.id;
+  const next = board.joinQueue({ idea: 'Use unique prime factorization of both sides.' });
+  const turn = board.peekTurn(next.agent.token);
+  assert.equal(turn.board.goalChanged.lastCard, `C-${Number(last.slice(2)) - 1}`);
+  assert.match(renderTurn(turn), /THE GOAL WAS REWORDED: cards up to C-\d+ were written for an earlier wording/);
+  const { card: fresh } = board.claimCard({ token: next.agent.token, title: 'Prime factorization', approach: 'Compare the exponent of the prime on both sides of p times q squared equals r squared.' });
+
+  // --max-ideas counts the ideas for this wording, so a used-up budget does not block the new goal
+  assert.equal(board.ideasForGoal(), 1);
+  assert.equal(Object.values(board.state.cards).filter((c) => c.kind === 'idea').length, 3);
+
+  // work that started after the change carries no warning; work handed on from before does
+  const { followup } = board.submitDerivation({ token: next.agent.token, established: 'The exponent of the prime is odd on the left side.', next_step: 'Show that it is even on the right side and conclude.' });
+  assert.equal(board.enterCard({ card_id: followup.id }).briefing.goalChanged, null);
+  assert.equal(fresh.status, 'derivation');
+});
+
+test('a changed goal opens no result check while nothing is verified; an interrupted card is handed on with a warning', async () => {
+  const { renderBriefing } = await import('../src/render.js');
+  const { board } = setup();
+  claim(board, ...PARITY);
+  board.recover(); // the board is started again, as it is when the goal file was edited
+  const res = board.setGoal(NEW_GOAL);
+  assert.equal(res.check, null);
+  assert.equal(res.wasFinished, false);
+  assert.equal(board.openCards().some((c) => c.kind === 'check'), false);
+  const takeover = board.enterCard({});
+  assert.deepEqual(takeover.briefing.goalChanged, { at: board.now(), lastCard: 'C-1' });
+  assert.match(renderBriefing(takeover), /every prime number[\s\S]*The user reworded this goal after this card was written/);
+  // a second change: the history grows, the newest boundary counts
+  board.setGoal(`${NEW_GOAL} Composite numbers are out of scope.`);
+  assert.equal(board.state.project.goalHistory.length, 2);
+  assert.equal(board.ideasForGoal(), 0);
+});

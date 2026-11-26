@@ -31,7 +31,8 @@ Usage
 Options for run
   -n, --agents N          Agents to keep alive at all times (default 4; adjustable live in the UI)
       --max-ideas N       Stop sending new researchers after N ideas (default 24, 0 = unlimited)
-      --goal-file FILE    Read the goal from a file
+      --goal-file FILE    Read the goal from a file. Edit it and run again to continue the same
+                          board on the changed goal
       --model NAME        Model for Claude Code agents (e.g. sonnet, opus)
       --permissions MODE  What agents may do (default: auto)
                             auto  shell, files and web; Claude Code's safety checks judge each command
@@ -43,7 +44,7 @@ Options for run
       --agent-timeout MIN Kill agents that run longer than MIN minutes (default 480, 0 = never)
       --max-budget-usd X  Spending cap per agent, passed to Claude Code
       --no-lenses         Do not give researchers individual thinking nudges
-      --fresh             Archive an existing board in this directory and start over
+      --fresh             Archive an existing board in this directory and start with an empty one
 
 Options for demo
       --speed X           Time multiplier (default 1)
@@ -118,7 +119,7 @@ const EVENT_STYLE = {
   queue_joined: ['·', c.dim], turn_started: ['·', c.dim], turn_passed: ['·', c.dim], turn_expired: ['!', c.yellow], queue_dropped: ['!', c.yellow],
   card_claimed: ['◆', c.blue], card_entered: ['◆', c.blue], card_opened: ['○', c.cyan], note: null, finding_added: ['+', c.magenta],
   proof_submitted: ['★', c.yellow], derivation_submitted: ['→', c.cyan], dead_end: ['×', c.dim], card_abandoned: ['!', c.yellow], agent_gone: null, project_created: null,
-  result_submitted: ['◎', c.cyan], goal_finished: ['✔', c.green], goal_reopened: ['○', c.yellow],
+  result_submitted: ['◎', c.cyan], goal_finished: ['✔', c.green], goal_reopened: ['○', c.yellow], goal_changed: ['○', c.yellow],
 };
 
 function logEvent(ev) {
@@ -137,20 +138,22 @@ function resultPath(flags, board) {
   return board.state.project.resultFile ?? path.resolve('result.md');
 }
 
-const RESULT_EVENTS = new Set(['result_submitted', 'goal_finished', 'goal_reopened', 'review_submitted', 'derivation_submitted']);
+const RESULT_EVENTS = new Set(['result_submitted', 'goal_finished', 'goal_reopened', 'goal_changed', 'review_submitted', 'derivation_submitted']);
 
-function writeResultFile(board) {
+/** Keep result.md current. `now` writes it at once: the goal was changed at startup, so the file on disk is about the old one. */
+function writeResultFile(board, { now = false } = {}) {
   const file = board.state.project.resultFile;
   if (!file) return;
-  board.on('event', (ev) => {
-    if (!RESULT_EVENTS.has(ev.type)) return;
+  const write = (ev) => {
     try {
       fs.writeFileSync(file, resultReport(board));
-      if (ev.type === 'result_submitted') console.log(`  ${' '.repeat(8)}  ${c.green('→')} result for you: ${path.relative(process.cwd(), file) || file}`);
+      if (ev?.type === 'result_submitted') console.log(`  ${' '.repeat(8)}  ${c.green('→')} result for you: ${path.relative(process.cwd(), file) || file}`);
     } catch (err) {
       console.error(`  ${c.red('could not write result.md:')} ${err.message}`);
     }
-  });
+  };
+  if (now) write();
+  board.on('event', (ev) => RESULT_EVENTS.has(ev.type) && write(ev));
 }
 
 async function listen(board, mcp, flags) {
@@ -193,8 +196,6 @@ function openBoard(flags, goal) {
   }
   if (fs.existsSync(stateFile)) {
     const board = new Board({ dir });
-    if (goal && goal !== board.state.project.goal)
-      die(`This directory already holds a board for a different goal:\n  "${board.state.project.title}"\nRun without a goal to resume it, or add --fresh to archive it and start over.`);
     // Boards from before workspaces were recorded: point cards at the directory their agent used.
     for (const card of Object.values(board.state.cards)) {
       card.workspaces ??= [];
@@ -205,7 +206,17 @@ function openBoard(flags, goal) {
     }
     board.recover();
     board.state.project.resultFile = resultPath(flags, board);
-    return { board, dir, resumed: true };
+    // A goal that differs from the board's is the same research with a corrected
+    // wording: the board is kept and continues on the new goal (--fresh starts over).
+    const changed = goal ? board.setGoal(goal) : null;
+    if (changed) {
+      console.log(`\n  ${c.yellow('The goal changed.')} The board is kept and continues with the new wording.`);
+      console.log(`  ${c.dim(`before: ${changed.previous}`)}`);
+      if (changed.wasFinished) console.log(`  ${c.dim('It was marked as finished for the old wording; that mark is removed.')}`);
+      if (changed.check) console.log(`  ${c.dim(`${changed.check.id}: a result checker compares what is already verified with the new goal.`)}`);
+      console.log(`  ${c.dim('Not what you wanted? Stop, then run again with the old goal, or with --fresh for an empty board.')}`);
+    }
+    return { board, dir, resumed: true, goalChanged: Boolean(changed) };
   }
   if (!goal) die('No goal given and no existing board in this directory.\n  wwresearch run "Prove or disprove that …"\n  wwresearch demo   (to just watch how it works)');
   const board = new Board({ dir, goal });
@@ -251,7 +262,7 @@ function writeReviewReports(board, dir) {
 // ----------------------------------------------------------------- commands
 
 async function cmdRun(flags, positional) {
-  const { board, dir, resumed } = openBoard(flags, readGoal(flags, positional));
+  const { board, dir, resumed, goalChanged } = openBoard(flags, readGoal(flags, positional));
   const mcp = createMcp(board, { version: VERSION });
   const { srv, url, mcpUrl } = await listen(board, mcp, flags);
   const agents = number(flags.agents, 'agents', 4);
@@ -296,7 +307,7 @@ async function cmdRun(flags, positional) {
     permissions,
     maxBudgetUsd: number(flags.maxBudgetUsd, 'max-budget-usd', 0, { integer: false }),
   });
-  if (resumed) board.setOrchestrator({ ideasSpawned: Object.values(board.state.cards).filter((card) => card.kind === 'idea').length });
+  if (resumed) board.setOrchestrator({ ideasSpawned: board.ideasForGoal() });
   const orchestrator = new Orchestrator({
     board,
     spawnAgent,
@@ -309,7 +320,7 @@ async function cmdRun(flags, positional) {
   });
 
   banner([
-    ['Goal', board.state.project.title + (resumed ? c.dim('  (resumed)') : '')],
+    ['Goal', board.state.project.title + (resumed ? c.dim(goalChanged ? '  (resumed with a changed goal)' : '  (resumed)') : '')],
     ['Board', c.cyan(url)],
     ['MCP', mcpUrl],
     ['Agents', `${agents} × ${flags.agentCmd ? 'custom command' : `Claude Code${flags.model ? ` (${flags.model})` : ''}`}${maxIdeas ? c.dim(`  · up to ${maxIdeas} ideas`) : ''}`],
@@ -318,7 +329,7 @@ async function cmdRun(flags, positional) {
   ]);
   board.on('event', logEvent);
   writeReviewReports(board, dir);
-  writeResultFile(board);
+  writeResultFile(board, { now: goalChanged });
   board.on('orchestrator', (o) => {
     if (o.error && o.error !== cmdRun.lastError) console.log(`\n  ${c.red('paused')} ${o.error}\n  ${c.dim(`Agent logs: ${path.relative(process.cwd(), path.join(dir, 'logs'))}`)}\n`);
     cmdRun.lastError = o.error;
@@ -341,18 +352,18 @@ async function cmdRun(flags, positional) {
 }
 
 async function cmdServe(flags, positional) {
-  const { board, dir, resumed } = openBoard(flags, readGoal(flags, positional));
+  const { board, dir, resumed, goalChanged } = openBoard(flags, readGoal(flags, positional));
   const mcp = createMcp(board, { version: VERSION });
   const { srv, url, mcpUrl } = await listen(board, mcp, flags);
   banner([
-    ['Goal', board.state.project.title + (resumed ? c.dim('  (resumed)') : '')],
+    ['Goal', board.state.project.title + (resumed ? c.dim(goalChanged ? '  (resumed with a changed goal)' : '  (resumed)') : '')],
     ['Board', c.cyan(url)],
     ['MCP', mcpUrl],
   ]);
   console.log(`  Dock an agent:\n    ${c.bold(`claude mcp add --transport http wwresearch ${mcpUrl}`)}\n    then, inside Claude Code:  ${c.bold('/mcp__wwresearch__researcher')}\n`);
   board.on('event', logEvent);
   writeReviewReports(board, dir);
-  writeResultFile(board);
+  writeResultFile(board, { now: goalChanged });
   lifecycle({ board, srv });
   if (!flags.noOpen && process.stdout.isTTY) openBrowser(url);
 }

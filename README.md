@@ -138,6 +138,8 @@ This starts the board at `http://localhost:4777`, opens it in your browser, and 
 
 State lives in `./.wwresearch`. Stop with Ctrl+C and start again with the same command (no goal needed): nothing is lost. Cards that were being worked on are handed to fresh agents, together with the notes, findings and files that were already there.
 
+**The goal turned out to be worded wrong?** Edit the goal file and start again with the same command. The board is kept as it is, with every card, finding and file, and the research continues on the new wording. Agents are told which cards were written for the earlier one, a *Finished* mark for the old wording is cleared, and if proofs were already verified a result checker compares them with the new goal first. To start with an empty board instead, add `--fresh`.
+
 Write the goal like you would brief a capable colleague: the exact statement, what counts as solved, and what is out of scope. [`examples/goal-template.md`](examples/goal-template.md) is a starting point.
 
 | Option | What it does |
@@ -150,7 +152,7 @@ Write the goal like you would brief a capable colleague: the exact statement, wh
 | `--max-budget-usd X` | Spending cap per agent. |
 | `--agent-timeout MIN` | Kill agents that run longer than this in total (default 480, `0` = never). Agents that go silent are released after an hour anyway. |
 | `--agent-cmd CMD` | Use your own agent command instead of Claude Code. |
-| `--fresh` | Archive the existing board in this directory and start over. |
+| `--fresh` | Archive the existing board in this directory and start with an empty one. Without it, a changed goal continues on the existing board. |
 
 **What agents may do.** Research agents need to run code and look things up, so by default they get a shell, file access and the web:
 
